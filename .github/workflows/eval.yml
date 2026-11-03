@@ -53,7 +53,7 @@ jobs:
           make eval ROUTES=config/llm_routes.deepseek.yml ONLY="$ONLY"
           EVAL_ARGS="--suite $SUITE --json evals/results/eval.json"
       # Per-thread draft texts and problems, to review failures.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: eval-results
