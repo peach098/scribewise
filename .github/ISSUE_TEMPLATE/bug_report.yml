@@ -1,0 +1,42 @@
+name: Bug report
+description: Something does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please **do not paste real messages, Telegram ids, phone numbers, tokens or session
+        strings**. Replace them with made-up ones. Security problems go through
+        [a private report](https://github.com/peach098/scribewise/security/advisories/new).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Send /settings
+        2. Press …
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`version` in pyproject.toml, or the commit you run"
+    validations:
+      required: true
+  - type: dropdown
+    id: provider
+    attributes:
+      label: LLM provider
+      options: [Anthropic, OpenAI-compatible API, Both, Not relevant]
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: "`docker compose logs app` around the problem. Logs carry no message texts, but check them for ids before pasting."
+      render: text

@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: [minor, patch]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: monthly
+    ignore:
+      # The project pins requires-python >=3.12,<3.13 and CI runs on 3.12; a Python
+      # upgrade is a deliberate change (pyproject, CI and Dockerfile together).
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]

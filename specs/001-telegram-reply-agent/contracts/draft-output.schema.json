@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DraftOutput",
+  "description": "Structured output returned by LLMProvider.draft_reply. Used as output_config.format for the drafting call and validated by the composer.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["text", "language", "needs_info", "placeholders", "sources", "flags", "conflicts", "tone_shift_applied", "context_warnings"],
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "The proposed reply, ready to send. Placeholders appear verbatim as [[...]] in the text."
+    },
+    "language": {
+      "type": "string",
+      "description": "BCP-47 language code of the draft, e.g. 'ru', 'en'."
+    },
+    "needs_info": {
+      "type": "boolean",
+      "description": "True when the reply could not be completed from the available context."
+    },
+    "placeholders": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["marker", "question"],
+        "properties": {
+          "marker": { "type": "string", "description": "Exact [[...]] token used in text." },
+          "question": { "type": "string", "description": "What the user must supply." }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "Every fact, date, number or commitment in the text must be backed by at least one source id taken from the request (message ids, task ids, commitment ids).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "id", "used_for"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["message", "task", "commitment"] },
+          "id": { "type": "string" },
+          "used_for": { "type": "string", "description": "Short note of which claim this supports." }
+        }
+      }
+    },
+    "flags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["creates_commitment", "sensitive"],
+      "properties": {
+        "creates_commitment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "what", "due"],
+          "properties": {
+            "value": { "type": "boolean" },
+            "what": { "type": ["string", "null"] },
+            "due": { "type": ["string", "null"], "description": "ISO date if the draft promises a date." }
+          }
+        },
+        "sensitive": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["value", "categories"],
+          "properties": {
+            "value": { "type": "boolean" },
+            "categories": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["credentials", "payment", "personal_data", "legal", "hr"] }
+            }
+          }
+        }
+      }
+    },
+    "conflicts": {
+      "type": "array",
+      "description": "Incoming request vs existing commitments or task deadlines.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["with_kind", "with_id", "description"],
+        "properties": {
+          "with_kind": { "type": "string", "enum": ["task", "commitment"] },
+          "with_id": { "type": "string" },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "tone_shift_applied": {
+      "type": "string",
+      "enum": ["none", "more_formal", "urgent", "emotional"]
+    },
+    "context_warnings": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["tasks_unavailable", "weak_style_profile", "history_truncated"] }
+    }
+  }
+}

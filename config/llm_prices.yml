@@ -1,0 +1,32 @@
+# USD per million tokens, used only for cost_usd in logs and eval reports.
+#   input_per_m          uncached input
+#   output_per_m         output (thinking tokens are billed as output)
+#   cached_input_per_m   prompt-cache reads
+#   cache_write_input_per_m (optional) 5-minute cache writes; defaults to 1.25 x input_per_m
+#   cache_write_1h_input_per_m (optional) 1-hour cache writes; defaults to 2 x input_per_m
+#   off_peak (optional) time-of-day discount: a call that starts outside every peak window
+#     (peak_weekdays, 0 = Monday, x peak_hours_utc, [start, end) in UTC) costs multiplier x
+#     the rates above
+# Message Batches are billed at 50% (applied in scribe.llm.pricing).
+# List prices as of Oct 2026. Claude Haiku 5.5 prompts above 100K tokens use a higher rate card
+# ($0.50 / $2.50); our routes stay far below that, so only the standard card is listed.
+models:
+  claude-opus-5-5:   {input_per_m: 4.00, output_per_m: 20.00, cached_input_per_m: 0.20, cache_write_input_per_m: 5.00}
+  claude-sonnet-5-5: {input_per_m: 2.00, output_per_m: 10.00, cached_input_per_m: 0.20, cache_write_input_per_m: 2.50}
+  claude-haiku-5-5:  {input_per_m: 0.10, output_per_m: 0.50,  cached_input_per_m: 0.01, cache_write_input_per_m: 0.125}
+  # Placeholders for openai_compat deployments: replace with the served model id and its price
+  # (self-hosted servers are typically 0) before pointing a route at them.
+  openai-compat-small: {input_per_m: 0.0, output_per_m: 0.0, cached_input_per_m: 0.0}
+  openai-compat-large: {input_per_m: 0.0, output_per_m: 0.0, cached_input_per_m: 0.0}
+  # DeepSeek (config/llm_routes.deepseek.yml), list prices from
+  # https://api-docs.deepseek.com/quick_start/pricing as of 2026-10-31. These are the standard
+  # (peak) rates; off-peak requests are billed at half: peak is 01:00-04:00 and 06:00-10:00 UTC
+  # on weekdays, everything else is off-peak (Chinese public holidays are not modelled, so a
+  # weekday holiday is priced as peak).
+  # Caching is automatic and has no write surcharge; cached_input_per_m is the cache-hit rate.
+  deepseek-flash:
+    {input_per_m: 0.30, output_per_m: 1.20, cached_input_per_m: 0.006, cache_write_input_per_m: 0.30,
+     off_peak: &deepseek_off_peak {multiplier: 0.5, peak_weekdays: [0, 1, 2, 3, 4], peak_hours_utc: [[1, 4], [6, 10]]}}
+  deepseek-v4-pro:
+    {input_per_m: 1.32, output_per_m: 3.96, cached_input_per_m: 0.044, cache_write_input_per_m: 1.32,
+     off_peak: *deepseek_off_peak}

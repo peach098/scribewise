@@ -1,0 +1,171 @@
+[
+  {
+    "id": "66f2a1000000000000000a01",
+    "name": "Q4 budget",
+    "desc": "",
+    "due": null,
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000101",
+    "idMembers": ["66f2a1000000000000000m01"],
+    "url": "https://trello.com/c/synthA01",
+    "actions": [
+      {
+        "id": "6712340000000000000c0a01",
+        "idMemberCreator": "66f2a1000000000000000m02",
+        "type": "commentCard",
+        "date": "2026-10-18T09:12:00.000Z",
+        "data": {
+          "text": "Talked to finance. deadline: 5 Nov",
+          "card": {"id": "66f2a1000000000000000a01", "name": "Q4 budget"}
+        },
+        "memberCreator": {"id": "66f2a1000000000000000m02", "fullName": "Ivan Petrov"}
+      }
+    ]
+  },
+  {
+    "id": "66f2a1000000000000000a02",
+    "name": "Landing page",
+    "desc": "Marketing landing for the autumn campaign.",
+    "due": "2026-10-30T15:00:00.000Z",
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000102",
+    "idMembers": ["66f2a1000000000000000m01", "66f2a1000000000000000m02"],
+    "url": "https://trello.com/c/synthA02",
+    "actions": [
+      {
+        "id": "6715000000000000000c0a02",
+        "idMemberCreator": "66f2a1000000000000000m02",
+        "type": "commentCard",
+        "date": "2026-10-19T08:00:00.000Z",
+        "data": {"text": "Client asked for more time, moving to Nov 5"},
+        "memberCreator": {"id": "66f2a1000000000000000m02", "fullName": "Ivan Petrov"}
+      },
+      {
+        "id": "6713000000000000000c0a03",
+        "idMemberCreator": "66f2a1000000000000000m01",
+        "type": "commentCard",
+        "date": "2026-10-15T11:30:00.000Z",
+        "data": {"text": "Draft ready. Final deadline is 10.11"},
+        "memberCreator": {"id": "66f2a1000000000000000m01", "fullName": "Anna Testova"}
+      },
+      {
+        "id": "6711000000000000000u0a01",
+        "idMemberCreator": "66f2a1000000000000000m01",
+        "type": "updateCard",
+        "date": "2026-10-12T07:00:00.000Z",
+        "data": {
+          "card": {"id": "66f2a1000000000000000a02", "due": "2026-10-30T15:00:00.000Z"},
+          "old": {"due": null}
+        },
+        "memberCreator": {"id": "66f2a1000000000000000m01", "fullName": "Anna Testova"}
+      }
+    ]
+  },
+  {
+    "id": "66f2a1000000000000000a03",
+    "name": "Contract review",
+    "desc": "",
+    "due": null,
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000101",
+    "idMembers": [],
+    "url": "https://trello.com/c/synthA03",
+    "actions": [
+      {
+        "id": "6713100000000000000c0a04",
+        "idMemberCreator": "66f2a1000000000000000m01",
+        "type": "commentCard",
+        "date": "2026-10-15T10:00:00.000Z",
+        "data": {"text": "Юристы просят сдать до пятницы"},
+        "memberCreator": {"id": "66f2a1000000000000000m01", "fullName": "Anna Testova"}
+      }
+    ]
+  },
+  {
+    "id": "66f2a1000000000000000a04",
+    "name": "API docs",
+    "desc": "",
+    "due": "2026-11-20T15:00:00.000Z",
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000102",
+    "idMembers": ["66f2a1000000000000000m02"],
+    "url": "https://trello.com/c/synthA04",
+    "actions": [
+      {
+        "id": "6716000000000000000u0a02",
+        "idMemberCreator": "66f2a1000000000000000m02",
+        "type": "updateCard",
+        "date": "2026-10-20T12:00:00.000Z",
+        "data": {
+          "card": {"id": "66f2a1000000000000000a04", "due": "2026-11-20T15:00:00.000Z"},
+          "old": {"due": "2026-11-01T15:00:00.000Z"}
+        },
+        "memberCreator": {"id": "66f2a1000000000000000m02", "fullName": "Ivan Petrov"}
+      },
+      {
+        "id": "6714000000000000000c0a05",
+        "idMemberCreator": "66f2a1000000000000000m02",
+        "type": "commentCard",
+        "date": "2026-10-17T09:00:00.000Z",
+        "data": {"text": "deadline Nov 1, as agreed"},
+        "memberCreator": {"id": "66f2a1000000000000000m02", "fullName": "Ivan Petrov"}
+      },
+      {
+        "id": "6714000000000000000c0bad",
+        "type": "commentCard",
+        "data": {"text": "an action without a date is skipped"}
+      }
+    ]
+  },
+  {
+    "id": "66f2a1000000000000000a05",
+    "name": "Onboarding guide",
+    "desc": "Scope: first-week checklist.\nDeadline: 2026-12-01",
+    "due": null,
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000101",
+    "idMembers": [],
+    "url": "https://trello.com/c/synthA05",
+    "actions": []
+  },
+  {
+    "id": "66f2a1000000000000000a06",
+    "name": "Design sync",
+    "desc": "",
+    "due": null,
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000101",
+    "idMembers": [],
+    "url": "https://trello.com/c/synthA06",
+    "actions": [
+      {
+        "id": "6716100000000000000c0a06",
+        "idMemberCreator": "66f2a1000000000000000m01",
+        "type": "commentCard",
+        "date": "2026-10-20T09:00:00.000Z",
+        "data": {"text": "Call on Friday to go through the mockups"},
+        "memberCreator": {"id": "66f2a1000000000000000m01", "fullName": "Anna Testova"}
+      }
+    ]
+  },
+  {
+    "id": "66f2a1000000000000000a07",
+    "name": "Mobile release",
+    "desc": "",
+    "due": null,
+    "dueComplete": false,
+    "idList": "66f2a1000000000000000102",
+    "idMembers": [],
+    "url": "https://trello.com/c/synthA07",
+    "actions": [
+      {
+        "id": "6716200000000000000c0a07",
+        "idMemberCreator": "66f2a1000000000000000m02",
+        "type": "commentCard",
+        "date": "2026-10-20T15:00:00.000Z",
+        "data": {"text": "ETA: two weeks after the demo, the demo is on the 26th"},
+        "memberCreator": {"id": "66f2a1000000000000000m02", "fullName": "Ivan Petrov"}
+      }
+    ]
+  }
+]

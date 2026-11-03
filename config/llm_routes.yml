@@ -1,0 +1,33 @@
+# LLM route table (contracts/internal-interfaces.md, research R5).
+# Callers never name a provider or model; each logical route resolves here.
+# Override any leaf per deployment with SCRIBE_LLM__<ROUTE>__<FIELD>, e.g.
+#   SCRIBE_LLM__COMPOSE_DRAFT__QUALITY__MODEL=claude-opus-5-5
+#   SCRIBE_LLM__EXTRACT_COMMITMENTS__PROVIDER=openai_compat
+#   SCRIBE_LLM__PROVIDERS__OPENAI_COMPAT__DATA_USE_CONFIRMED=true
+# Startup fails on an unknown provider, a model missing from llm_prices.yml, or a route whose
+# provider does not have data_use_confirmed: true (operator attests: no training on user data).
+# openai_compat sends a route's effort as reasoning_effort only with `reasoning_effort: true` on
+# the provider (off by default: the server's own default applies).
+# anthropic caches the system prompt of compose.draft and retrieve.filter_context (the same for
+# every user) and the style profile with the 1-hour TTL; `cache_ttl: 5m` on the provider (or
+# SCRIBE_LLM__PROVIDERS__ANTHROPIC__CACHE_TTL=5m) switches to 5-minute entries.
+# effort: none turns thinking off; only an openai_compat provider with `disable_thinking: true`
+# (DeepSeek's thinking: {type: disabled}) takes it, and startup fails on any other provider.
+# It sends a route's max_tokens as max_completion_tokens (OpenAI); set
+# `max_tokens_param: max_tokens` on the provider for servers that only know max_tokens (DeepSeek).
+# profile.build retries once after a truncated answer with the effort one step lower and half
+# the samples (style/profiles.py).
+routes:
+  retrieve.filter_context: {provider: anthropic, model: claude-haiku-5-5, effort: low,    max_tokens: 2000}
+  classify.reply_needed:   {provider: anthropic, model: claude-haiku-5-5, effort: low,    max_tokens: 500}
+  extract.commitments:     {provider: anthropic, model: claude-haiku-5-5, effort: low,    max_tokens: 2000}
+  extract.deadlines:       {provider: anthropic, model: claude-haiku-5-5, effort: low,    max_tokens: 1000}
+  compose.draft:
+    tiers:
+      quality:             {provider: anthropic, model: claude-opus-5-5,   effort: medium, max_tokens: 4000}
+      economy:             {provider: anthropic, model: claude-sonnet-5-5, effort: medium, max_tokens: 4000}
+  profile.build:           {provider: anthropic, model: claude-opus-5-5,   effort: high,   max_tokens: 16000, prefer_batch: true}
+  eval.style_judge:        {provider: anthropic, model: claude-haiku-5-5, effort: low,    max_tokens: 2000}
+providers:
+  anthropic:     {api_key_env: ANTHROPIC_API_KEY, data_use_confirmed: true}
+  openai_compat: {api_key_env: OPENAI_API_KEY, base_url_env: OPENAI_BASE_URL, data_use_confirmed: false}

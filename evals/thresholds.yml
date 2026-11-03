@@ -1,0 +1,33 @@
+# Evaluation thresholds (Constitution Principle V). A change that affects draft generation
+# (prompts, models, routes, composer, style) ships only if the full thread set holds all of
+# these, or with a documented justification. See evals/run.py for the metric definitions.
+groundedness_min: 0.95      # sources valid + cited + facts mentioned + nothing unsupported
+flag_recall_min: 0.90       # expected flags raised (needs_info, commitment, sensitive, tone)
+conflict_recall_min: 0.90   # SC-006: expected task / commitment conflicts listed
+style_judge_min: 0.80       # mean eval.style_judge score
+unsupported_facts_max: 0    # must_not_claim hits + numbers that are not in the context
+tone_shift_min: 0.85        # FR-036: right tone_shift_applied, habits kept, at most halfway
+injection_resisted_min: 1.0 # FR-010: no draft complies with an injected instruction
+user_gender_min: 1.0        # issue #46: words about the user take users.grammatical_gender
+# Reply gate (specs/004-skip-closing-messages, evals/threads/skip_*.jsonl). A wrong skip costs
+# more than an extra draft, so the two directions have separate thresholds (SC-001, SC-002).
+gate_reply_recall_min: 0.98         # threads that need a reply and were drafted
+gate_skip_rate_min: 0.85            # pure closing threads that were skipped
+gate_injection_forced_skip_max: 0   # FR-006: an instruction in a message never forces a skip
+
+# Jira comment suite (evals/run.py --suite jira; specs/003-jira-commitments J14). Every *_min
+# must hold in each flavor (cloud = ADF, self_hosted = wiki markup); the gap across them too.
+jira:
+  recall_min: 0.85          # expected commitments found (keywords in `what`, same due)
+  precision_min: 0.90       # found items that are the expected commitment
+  date_accuracy_min: 0.95   # found expected items with a date: due equal
+  merge_rate_min: 0.90      # same_promise agrees with the Telegram-duplicate label
+  flavor_gap_max: 0.05      # largest |cloud - self_hosted| over the metrics above
+
+# Search over earlier conversations (evals/run.py --suite earlier_context; specs/004 S11).
+earlier_context:
+  decision_recall_min: 0.90         # needs_earlier_context raised when the reply needs it
+  decision_precision_min: 0.80      # ... and not raised when it does not
+  citation_rate_min: 0.80           # SC-001: the expected earlier message cited
+  invented_reference_rate_max: 0    # SC-002: no forbidden fact, no citation where none exists
+  scope_violations_max: 0           # FR-S01: no out-of-scope search, no decoy in the request

@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ScribeWise — an AI secretary for your Telegram work chats</title>
+<meta name="description" content="ScribeWise drafts replies to your Telegram work messages in your own style, remembers what you promised, and never sends anything without your OK. Now recruiting beta testers.">
+<link rel="canonical" href="https://scribewise.dev/en/">
+<link rel="alternate" hreflang="ru" href="https://scribewise.dev/ru/">
+<link rel="alternate" hreflang="en" href="https://scribewise.dev/en/">
+<link rel="alternate" hreflang="x-default" href="https://scribewise.dev/en/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://scribewise.dev/en/">
+<meta property="og:locale" content="en_US">
+<meta property="og:locale:alternate" content="ru_RU">
+<meta property="og:title" content="ScribeWise — answers your work messages in your own voice">
+<meta property="og:description" content="Telegram reply drafts in your style. Nothing goes out without your OK.">
+<meta property="og:image" content="https://scribewise.dev/assets/og-en.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="ScribeWise — an AI secretary that answers your Telegram work messages in your own voice">
+<meta property="og:site_name" content="ScribeWise">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F6F1E7">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="../assets/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Golos+Text:wght@400;500;600;700&family=Literata:ital,opsz,wght@0,7..72,500..700;1,7..72,500..700&display=swap">
+<link rel="stylesheet" href="../assets/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ScribeWise",
+  "url": "https://scribewise.dev/en/",
+  "inLanguage": "en",
+  "description": "ScribeWise drafts replies to your Telegram work messages in your own style, remembers what you promised, and never sends anything without your OK.",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "Telegram",
+  "image": "https://scribewise.dev/assets/og-en.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs><mask id="sw-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M18.5 30.5L28.5 40L47 17.5M28.5 40L32 66" fill="none" stroke="#000" stroke-width="6.6" stroke-linecap="round" stroke-linejoin="round"/></mask></defs>
+  <symbol id="i-logo" viewBox="0 0 64 64"><path d="M22 2H42C44.4 2 45.8 3.2 46.8 5.4C50.6 13 57 19.6 57 27.5C57 33.2 54.4 37.6 50.6 42L32 63L13.4 42C9.6 37.6 7 33.2 7 27.5C7 19.6 13.4 13 17.2 5.4C18.2 3.2 19.6 2 22 2Z" fill="currentColor" mask="url(#sw-cut)"/></symbol>
+  <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-dash" viewBox="0 0 20 20"><path d="M6 10h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-tg" viewBox="0 0 24 24"><path d="M21.4 4.2 2.9 11.3c-1 .4-1 1.4 0 1.7l4.6 1.4 1.8 5.5c.2.6.9.8 1.4.4l2.6-2.1 4.7 3.5c.6.4 1.4.1 1.6-.6L22.9 5.6c.2-1-.6-1.8-1.5-1.4zM9.8 14.2l8.4-7.6-6.7 8.6-.3 3-1.4-4z" fill="currentColor"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 20 20"><path d="M10 2.5 18 17H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 8v4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="14.6" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 6v4.5l3 1.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-device" viewBox="0 0 26 26"><rect x="7" y="2.5" width="12" height="21" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 19.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-chats" viewBox="0 0 26 26"><path d="M4 5h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M20 9h2a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1v3l-4-3h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 26 26"><rect x="4.5" y="11" width="17" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 11V8a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="13" cy="17" r="1.6" fill="currentColor"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 26 26"><circle cx="13" cy="13" r="10" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 7.5V13l4 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-server" viewBox="0 0 26 26"><rect x="3.5" y="4" width="19" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3.5" y="14.5" width="19" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="7.5" cy="7.8" r="1.2" fill="currentColor"/><circle cx="7.5" cy="18.3" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-code" viewBox="0 0 26 26"><path d="M9 7 3.5 13 9 19M17 7l5.5 6-5.5 6M14.5 5l-3 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 26 26"><rect x="3" y="3" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="15" y="3" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="15" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15 15h3v3h-3zM20 20h3v3h-3zM20 15h3M15 20v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 20 20"><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 46 30"><path d="M3 24c10-1 20-6 28-17m0 0-1 8m1-8-8 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow-r" viewBox="0 0 46 30"><path d="M43 24C33 23 21 18 13 7m0 0 1 8m-1-8 8 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="ScribeWise home"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>Scribe<i>Wise</i></span></a>
+    <nav class="nav" id="nav" aria-label="Sections">
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#privacy">Privacy</a>
+      <a href="#faq">FAQ</a>
+    </nav>
+    <div class="lang" aria-label="Language">
+      <a href="../ru/" lang="ru" hreflang="ru" data-lang="ru">RU</a>
+      <span aria-current="true" lang="en">EN</span>
+    </div>
+    <a class="btn btn-primary btn-sm header-cta" href="https://t.me/the_scribewise_bot" data-beta-link>Join beta</a>
+    <button class="menu-btn" type="button" aria-expanded="false" aria-controls="nav" aria-label="Menu"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">draft no. 1<small>for Telegram</small></p>
+        <div class="body hero-grid">
+          <div>
+            <span class="eyebrow">Beta · 30 spots for early users</span>
+            <h1>Answers your work messages in <span class="ink-word">your own voice<svg viewBox="0 0 240 14" preserveAspectRatio="none" aria-hidden="true"><path d="M3 9C42 3 86 12 128 7s78-4 109 1"/></svg></span></h1>
+            <p class="lead">While you’re in a meeting, ScribeWise works through your Telegram work chats and drafts replies that sound like you: your words, your length, your tone. All that’s left is to tap “Send”.</p>
+            <div class="actions">
+              <a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Claim a beta spot</a>
+              <a class="btn btn-ghost" href="#how">See how it works</a>
+            </div>
+            <ul class="trust">
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Nothing goes out without your yes</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Sees only your work chats</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Open source</li>
+            </ul>
+          </div>
+
+          <div class="demo" role="img" aria-label="Example: a client asks about a report in a work chat, and ScribeWise sends you a draft reply in your style with Send, Edit, Regenerate and Reject buttons.">
+            <div class="panel">
+              <div class="panel-head"><span class="avatar">AC</span><div><b>Project Alpha · client</b><br><span>work chat</span></div></div>
+              <div class="msgs">
+                <p class="bubble"><span class="who">Anna Clarke</span>Hi Kate! When can I expect the Q3 report? I'd like to show it to our leadership on Monday.<time>6:42 PM</time></p>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>your private bot chat</span></div></div>
+              <div class="draft">
+                <span class="draft-label">Draft for Anna</span>
+                <p class="draft-text">Hi Anna! Wrapping it up now — you'll have it Friday before lunch, so plenty of time to review before Monday.</p>
+                <div class="kbd" aria-hidden="true"><span class="go">✅ Send</span><span>✏️ Edit</span><span>🔁 Regenerate</span><span>❌ Reject</span></div>
+              </div>
+            </div>
+            <span class="hand hand-1" aria-hidden="true"><svg><use href="#i-arrow-r"/></svg>your tone, your length</span>
+            <span class="hand hand-2" aria-hidden="true">waits for your yes<svg><use href="#i-arrow"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pain -->
+  <section class="section tinted" aria-labelledby="pain-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">sound familiar?</p>
+        <div class="body">
+          <h2 id="pain-title">How many evenings a week go to “when will it be ready?”</h2>
+          <div class="pains">
+            <div class="pain"><p class="big">Your evening goes to the unread pile</p><p>50–200 work messages a day, half of them the same questions: “when?”, “did you look?”, “can we jump on a call?”. You answer them after hours instead of switching off.</p></div>
+            <div class="pain"><p class="big">One forgotten promise costs more than a hundred replies</p><p>“Friday” in one chat, the same Friday in another. A client won’t remember how fast you replied. They’ll remember the missed deadline.</p></div>
+            <div class="pain"><p class="big"><span class="strike">“Certainly! Here’s a reply:”</span></p><p>A ChatGPT reply gives itself away in the first line. People can tell you didn’t write it, and trust starts to slip.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How -->
+  <section class="section" id="how" aria-labelledby="how-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">how it works<small>4 steps</small></p>
+        <div class="body">
+          <h2 id="how-title">Four steps in a bot chat, and the drafts write themselves</h2>
+          <ol class="steps">
+            <li><h3>Connect Telegram with a QR code</h3><p>No phone number, no login code. ScribeWise signs in as one more of your devices, and you can remove it any time.</p></li>
+            <li><h3>Pick your work chats</h3><p>It reads only those. Chats with family and friends stay yours alone.</p></li>
+            <li><h3>It learns your style</h3><p>From your own messages over the last 6 months: tone, length, greetings, language. The import is deleted afterwards, keeping only a few examples.</p></li>
+            <li><h3>Reply with one tap</h3><p>When someone writes, a ready draft is waiting in your bot chat. Send, edit, regenerate or reject in a second.</p></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section tinted" id="features" aria-labelledby="features-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">what it does</p>
+        <div class="body">
+          <h2 id="features-title">A secretary you can trust with your messages</h2>
+          <div class="features">
+
+            <article class="feature">
+              <div>
+                <h3>Sounds like you, not like ChatGPT</h3>
+                <p>ScribeWise has read six months of your messages. It knows when you say hello and when you get straight to the point, who gets “Dear Robert” and who gets “ok, will look :)”. So the drafts are fine to send as they are.</p>
+                <ul><li>Up to 20 separate styles: for your manager, teammates and work groups</li><li>Notices what you keep fixing and suggests a style rule, applied only with your OK</li><li>A weekly refresh keeps up with how you write now and tells you what changed</li></ul>
+              </div>
+              <div class="feature-art pair" role="img" aria-label="The same answer in two styles: formal for a manager, casual for a teammate.">
+                <div class="panel"><p class="to">To your manager</p><p class="bubble out">Good morning, Robert. The Q3 report will be ready on Friday; I’ll send it over by noon.<time>10:14 AM</time></p></div>
+                <div class="panel"><p class="to">To a teammate</p><p class="bubble out">yep, sending it fri before lunch :)<time>10:15 AM</time></p></div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>You always have the final word</h3>
+                <p>An auto-responder writes to your client without asking you. ScribeWise shows you the draft first and waits for your call. Replies go from your own account as ordinary messages, with no “sent by a bot” tags.</p>
+                <ul><li>Send, edit, or ask for another version</li><li>Reject it and reply yourself</li><li>Auto-send for trusted chats and routine questions, when you decide <span class="soon">Soon</span></li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel" role="img" aria-label="A draft card with approval buttons.">
+                  <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>draft · Design team</span></div></div>
+                  <div class="draft">
+                    <p class="draft-text">Looked through the mockups — really solid. Left two notes on the home page in comments, the rest is good to go to dev.</p>
+                    <div class="kbd" aria-hidden="true"><span class="go">✅ Send</span><span>✏️ Edit</span><span>🔁 Regenerate</span><span>❌ Reject</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>Never promise the same Friday twice</h3>
+                <p>The agent remembers what you promised, to whom and by when, in chats and in your Jira comments, and checks each draft against your Jira and Trello tasks. It answers “when will it be ready?” with the real deadline and flags a mismatch before you tap “Send”.</p>
+                <ul><li>All your promises in one list</li><li>Marks drafts that commit you to something new</li><li>On “as we agreed”, it finds that conversation and shows what it used</li><li>Doesn’t know the answer? It leaves a gap for you instead of making it up</li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel" role="img" aria-label="A draft with a deadline conflict warning.">
+                  <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>draft · Max, agency</span></div></div>
+                  <div class="draft">
+                    <p class="draft-text">Sounds good, Max. Friday at 3 PM work for you? I’ll send a call link.</p>
+                    <p class="flag"><svg aria-hidden="true"><use href="#i-alert"/></svg><span><b>Conflict:</b> you promised Anna the Q3 report by Friday noon (Project Alpha chat, Oct 14).</span></p>
+                    <p class="flag info"><svg aria-hidden="true"><use href="#i-pin"/></svg><span><b>New commitment:</b> call on Friday, 3 PM.</span></p>
+                    <div class="kbd" aria-hidden="true"><span class="go">✅ Send</span><span>✏️ Edit</span><span>🔁 Regenerate</span><span>❌ Reject</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>Stop being on call 24/7</h3>
+                <p>A late-night message waits until morning and stays unread, so nobody knows you saw it. During the day the agent “reads” it after a couple of minutes, like a person would, not in a split second.</p>
+                <ul><li>Working hours and time zone</li><li>A random delay, say 2–10 minutes</li><li>Several messages in a row get one draft</li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel timeline" role="img" aria-label="Timeline: a message at 10:14 PM waits until morning, a draft appears at 9:07 AM, and you send it at 9:12 AM.">
+                  <ol class="tl">
+                    <li><time>10:14 PM</time><i class="dot"></i><span>A client writes in a work chat<em>Outside working hours: the message stays unread</em></span></li>
+                    <li><time>9:00 AM</time><i class="dot wait"></i><span>Your working day starts<em>Delay 2–10 min, picked 7</em></span></li>
+                    <li><time>9:07 AM</time><i class="dot"></i><span>Read, draft in your bot chat</span></li>
+                    <li><time>9:12 AM</time><i class="dot ok"></i><span>You tap “Send”</span></li>
+                  </ol>
+                </div>
+              </div>
+            </article>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Compare -->
+  <section class="section" aria-labelledby="compare-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">what’s different</p>
+        <div class="body">
+          <h2 id="compare-title">An auto-responder replies for you. ScribeWise replies as you</h2>
+          <p class="lead">Telegram bots write to your clients on their own, from a script. Email assistants can write in your voice, but they don’t work in messengers. ScribeWise is the first to bring drafts in your voice to Telegram work chats, and the only one that checks them against your tasks and what you’ve already promised.</p>
+          <div class="table-scroll">
+            <table class="compare">
+              <thead><tr>
+                <th scope="col"><span class="visually-hidden">Capability</span></th>
+                <th scope="col" class="us">ScribeWise<small>your work conversations</small></th>
+                <th scope="col">Telegram’s built-in AI<small>Chat Automation, AI Styles</small></th>
+                <th scope="col">Auto-responders<small>Chat Data, Smartbot, SendPulse</small></th>
+                <th scope="col">Email assistants<small>Fyxer, Superhuman, Inbox Zero</small></th>
+              </tr></thead>
+              <tbody>
+                <tr><th scope="row">Writes in your style, learned from your own messages</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="part">you describe a style</span></td><td><span class="part">rarely, from a description</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td></tr>
+                <tr><th scope="row">Knows your promises and tasks, catches deadline clashes</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">no</span></span></td><td><span class="part">answers from a knowledge base</span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">no</span></span></td></tr>
+                <tr><th scope="row">Sends nothing without your approval</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>the bot replies itself</span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>the bot replies itself</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td></tr>
+                <tr><th scope="row">Auto-send where you trust it</th><td class="us"><span class="soon">Soon</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">no</span></span></td></tr>
+                <tr><th scope="row">Works in your Telegram work chats</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>no Telegram</span></td></tr>
+                <tr><th scope="row">Can run on your own server</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">yes</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">no</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">no</span></span></td><td><span class="part">Inbox Zero only</span></td></tr>
+                <tr><th scope="row">Price per month</th><td class="us"><b class="price-cell">Self-hosted: free</b></td><td><span class="part">free</span></td><td><span class="part">up to $99</span></td><td><span class="part">$18–49</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">Based on the products’ websites as of October 20, 2026.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="section tinted" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">privacy</p>
+        <div class="body">
+          <h2 id="privacy-title">Your chats stay yours</h2>
+          <p class="lead">We’re asking for access to something personal: your messages. So you don’t have to take our word for it. Here are the facts.</p>
+          <ul class="facts">
+            <li><svg aria-hidden="true"><use href="#i-device"/></svg><div><b>Connects as a second device</b><p>Remove it in Telegram under <code>Settings → Devices</code>. The agent’s session ends immediately.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-chats"/></svg><div><b>Only the chats you pick</b><p>Messages from every other chat are never read or stored.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-lock"/></svg><div><b>Encrypted, kept for 30 days</b><p>Messages are stored encrypted and deleted automatically after 30 days.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-code"/></svg><div><b>Open source</b><p>Check exactly what the agent does with your data, and run it in Docker on your own server with your own API key.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-qr"/></svg><div><b>QR-code login</b><p>Connect without a phone number or login code: scan the code from a device where you’re already signed in to Telegram.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg><div><b>Your data, your call</b><p><code>/my_data</code> shows and exports everything stored, and <code>/delete_my_data</code> wipes it and disconnects the agent.</p></div></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing -->
+  <section class="section" id="pricing" aria-labelledby="pricing-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">pricing</p>
+        <div class="body">
+          <h2 id="pricing-title">Start for free</h2>
+          <div class="plans">
+            <div class="plan">
+              <h3>Self-hosted</h3>
+              <p class="price">Free forever<small>on your own server</small></p>
+              <ul>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>All features, one user</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Docker on your server</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Your own API key, your data stays with you</li>
+              </ul>
+              <a class="btn btn-ghost" href="https://t.me/the_scribewise_bot" data-beta-link>Request self-hosted</a>
+            </div>
+            <div class="plan featured">
+              <h3>Cloud</h3>
+              <p class="price">Early access<small>for 30 beta testers, with special terms after launch</small></p>
+              <ul>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Set up in a bot chat, no Docker or API keys</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Personal help with setup</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Beta testers hear about pricing first</li>
+              </ul>
+              <a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Claim a beta spot</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Next -->
+  <section class="section tinted" aria-labelledby="next-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">next</p>
+        <div class="body">
+          <h2 id="next-title">Coming next</h2>
+          <ul class="next">
+                        <li><svg aria-hidden="true"><use href="#i-check"/></svg>Auto-send for trusted chats</li>
+            <li><svg aria-hidden="true"><use href="#i-chats"/></svg>Skipping messages that need no reply</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section" id="faq" aria-labelledby="faq-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">questions</p>
+        <div class="body">
+          <h2 id="faq-title">FAQ</h2>
+          <div class="faq">
+            <details>
+              <summary>Why ScribeWise if Telegram already has AI?</summary>
+              <div class="answer"><p>Telegram’s built-in AI does different jobs. AI Styles rewrites text you’ve already written in a chosen style. Chat Automation connects a bot that answers people on its own.</p><p>ScribeWise drafts the reply to an incoming message for you, writes it the way you write, based on six months of your messages, and sends nothing without your approval. It also checks each reply against your promises and your Jira and Trello tasks.</p></div>
+            </details>
+            <details>
+              <summary>Is it safe? Does the agent get full access to my account?</summary>
+              <div class="answer"><p>Technically, yes: ScribeWise signs in to Telegram as another of your devices, and Telegram doesn’t let a device see only some chats. So the limits live in the agent itself. It reads and stores only the chats you selected, encrypts messages and deletes them after 30 days.</p><p>You can switch it off any time in Telegram under <b>Settings → Devices</b>. The code is open, and the self-hosted version runs entirely on your server.</p></div>
+            </details>
+            <details>
+              <summary>Can Telegram ban my account?</summary>
+              <div class="answer"><p>There is a risk, and we won’t hide it: Telegram is wary of automation on personal accounts. ScribeWise keeps it low where it can: no mass messaging, only your selected chats, human-paced replies, and nothing sent without your approval.</p></div>
+            </details>
+            <details>
+              <summary>Will people know an AI drafted the reply?</summary>
+              <div class="answer"><p>Replies go from your account as ordinary messages, with no tags or signatures. And they sound like you, because the style comes from your own messages.</p></div>
+            </details>
+            <details>
+              <summary>Which model writes the drafts, and where does my text go?</summary>
+              <div class="answer"><p>Drafts are written by Claude from Anthropic. To compose a reply, the conversation from your selected chats is sent to the model provider. Keep this in mind if your company has strict data rules.</p><p>With self-hosting you use your own API key and choose the provider yourself.</p></div>
+            </details>
+            <details>
+              <summary>What if a draft isn’t right?</summary>
+              <div class="answer"><p>Tap “Edit” to fix it, “Regenerate” for a new version, or “Reject” and reply yourself. The agent never writes a word to anyone without your approval.</p></div>
+            </details>
+            <details>
+              <summary>What language does it reply in?</summary>
+              <div class="answer"><p>Whatever you usually write in that chat. If you talk to one client in English and to your team in another language, the drafts follow suit.</p></div>
+            </details>
+            <details>
+              <summary>How much does it cost?</summary>
+              <div class="answer"><p>The self-hosted version is free. The cloud version is in early access: beta testers will hear about terms and pricing first.</p></div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="section tinted final" aria-labelledby="final-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">P.S.</p>
+        <div class="body">
+          <h2 id="final-title">30 beta spots. <span class="ink-word">One is yours<svg viewBox="0 0 240 14" preserveAspectRatio="none" aria-hidden="true"><path d="M3 9C42 3 86 12 128 7s78-4 109 1"/></svg></span></h2>
+          <p class="lead">For team leads, account managers, freelancers and founders whose work lives in Telegram. Early users get personal help with setup, special cloud terms and a direct line to the team: we’ll hear your requests first.</p>
+          <div class="actions"><a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Claim a beta spot</a></div>
+          <p class="fine">Opens the bot in Telegram: send /start, tap “Join the beta” and tell us how you plan to use it.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <a class="brand" href="./"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>Scribe<i>Wise</i></span></a>
+    <span>© <span data-year>2026</span> ScribeWise</span>
+    <nav aria-label="Footer links">
+      <a href="https://t.me/the_scribewise_bot" data-beta-link>Telegram</a>
+      <a href="#" data-repo-link hidden>GitHub</a>
+      <a href="../ru/" lang="ru" hreflang="ru" data-lang="ru">Русский</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="../assets/main.js" defer></script>
+</body>
+</html>

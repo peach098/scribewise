@@ -1,0 +1,32 @@
+# Secrets
+.env
+.env.*
+!.env.example
+*.session
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+.python-version
+
+# Tooling caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Claude Code session worktrees
+.claude/worktrees/
+
+# Eval output (per-thread draft texts)
+evals/results/

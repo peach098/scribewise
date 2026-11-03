@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ScribeWise</title>
+<meta name="robots" content="noindex, follow">
+<link rel="alternate" hreflang="ru" href="https://scribewise.dev/ru/">
+<link rel="alternate" hreflang="en" href="https://scribewise.dev/en/">
+<link rel="alternate" hreflang="x-default" href="https://scribewise.dev/en/">
+<link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/assets/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="/assets/apple-touch-icon.png">
+<script>
+  (function () {
+    var lang = null;
+    try { lang = localStorage.getItem("scribewise-lang"); } catch (e) {}
+    if (lang !== "ru" && lang !== "en") {
+      var langs = navigator.languages || [navigator.language || ""];
+      lang = langs.some(function (l) { return /^(ru|be|uk|kk)\b/i.test(l); }) ? "ru" : "en";
+    }
+    location.replace("/" + lang + "/");
+  })();
+</script>
+<style>body{margin:0;min-height:100vh;display:grid;place-items:center;background:#F6F1E7;color:#1E2638;font:17px/1.6 system-ui,sans-serif}a{color:#2B4AA0}</style>
+</head>
+<body>
+<p><a href="/ru/">Русская версия</a> · <a href="/en/">English version</a></p>
+</body>
+</html>

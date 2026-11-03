@@ -1,0 +1,62 @@
+# Real-model evaluation set (constitution V). Run by hand for large draft-generation changes:
+# Actions → "Evaluation set" → Run workflow, on the branch to evaluate. Costs API money.
+name: Evaluation set
+
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: "Suites to run (all proves the thresholds; the others are for iterating)"
+        type: choice
+        options: [all, drafts, jira, earlier_context]
+        default: all
+      only:
+        description: "Optional --only patterns over <file stem>/<id>, e.g. user_gender/* (subset)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.0"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  eval:
+    name: evaluation set
+    runs-on: ubuntu-latest
+    env:
+      # DeepSeek's public OpenAI-compatible API (config/llm_routes.deepseek.yml). The eval
+      # threads are synthetic, so no user data is sent, and the data-use attestation that the
+      # table leaves to the operator is safe to give here.
+      DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+      DEEPSEEK_BASE_URL: https://api.deepseek.com
+      SCRIBE_LLM__PROVIDERS__OPENAI_COMPAT__DATA_USE_CONFIRMED: "true"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - name: make eval
+        env:
+          SUITE: ${{ inputs.suite || 'all' }}
+          ONLY: ${{ inputs.only }}
+        run: >-
+          make eval ROUTES=config/llm_routes.deepseek.yml ONLY="$ONLY"
+          EVAL_ARGS="--suite $SUITE --json evals/results/eval.json"
+      # Per-thread draft texts and problems, to review failures.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-results
+          path: evals/results/eval.json
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,18 @@
+# gitleaks configuration (picked up automatically from the repository root, locally and in CI).
+# Extends the default rules and allowlists only the synthetic test fixtures below by their exact
+# values, so a real key in the same files is still reported. Prefer this over .gitleaksignore:
+# fingerprints there contain commit SHAs and break whenever history is rewritten or exported.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Synthetic fixtures in tests, not real secrets"
+regexTarget = "secret"
+regexes = [
+  # Trello key fixture (tests/integration/test_us3_commands.py, test_us3_review_fixes.py)
+  '''^0123456789abcdef0123456789abcdef$''',
+  # Trello key fixture (tests/contract/test_trello_task_source.py)
+  '''^synthetic-key-0123456789abcdef$''',
+  # closing-message marker in a log-redaction test (tests/integration/test_skip_flow.py)
+  '''^synthetic-closing-7c1e$''',
+]

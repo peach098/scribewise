@@ -1,0 +1,107 @@
+# Quality gates per constitution "Development Workflow & Quality Gates".
+# Mark every job below as a required status check in the branch protection rules for main.
+# The real-model evaluation set runs only by hand (.github/workflows/eval.yml), for large
+# draft-generation changes; here only the offline dry run (`make eval-dry`) runs.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_VERSION: "0.13.0"
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  checks:
+    name: lint, typecheck, fast tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make lint typecheck test-fast eval-dry
+
+  integration:
+    name: integration tests
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: scribe
+          POSTGRES_PASSWORD: scribe
+          POSTGRES_DB: scribe_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scribe -d scribe_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      SCRIBE_TEST_DATABASE_URL: postgresql+asyncpg://scribe:scribe@localhost:5432/scribe_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make test-integration
+
+  docker:
+    name: docker image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: docker build -t scribe:ci .
+      - name: Smoke test
+        run: docker run --rm scribe:ci python -c "import scribe.__main__, scribe.admin"
+
+  secrets-scan:
+    name: gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Scan commits in this change
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            LOG_OPTS="$HEAD_SHA"
+          else
+            LOG_OPTS="$BASE_SHA..$HEAD_SHA"
+          fi
+          docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.21.2 \
+            git /repo --log-opts="$LOG_OPTS" --redact --verbose --exit-code 1
+
+  dependency-audit:
+    name: pip-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: ${{ env.UV_VERSION }}
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Export locked dependencies
+        run: uv export --locked --all-groups --no-emit-project --format requirements-txt -o requirements-audit.txt
+      - name: Audit
+        run: uvx pip-audit --strict --disable-pip -r requirements-audit.txt

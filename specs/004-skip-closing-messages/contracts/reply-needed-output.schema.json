@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scribe/reply-needed-output.schema.json",
+  "title": "ReplyNeededOutput",
+  "description": "Structured output of the classify.reply_needed route (004 research R2). The system skips a turn only when reply_needed is false and confidence >= skip_min_confidence.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply_needed", "category", "confidence", "resolves_pending"],
+  "properties": {
+    "reply_needed": {
+      "type": "boolean",
+      "description": "True when the user would normally answer: any question, request, new information calling for a response, disagreement, complaint, or a greeting that opens a conversation."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["thanks", "farewell", "acknowledgment", "none"],
+      "description": "What the turn mainly is when it only closes the exchange; 'none' when it does something else."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence in reply_needed."
+    },
+    "resolves_pending": {
+      "type": "boolean",
+      "description": "Only meaningful when pending_draft is true in the request: the turn says the earlier request is no longer needed (e.g. 'never mind, solved it, thanks'). False otherwise."
+    }
+  }
+}

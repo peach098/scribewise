@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ScribeWise — ИИ-секретарь для рабочих чатов в Telegram</title>
+<meta name="description" content="ScribeWise готовит ответы на рабочие сообщения в Telegram вашим стилем, помнит, что вы обещали, и ничего не отправляет без вашего одобрения. Набираем бета-тестеров.">
+<link rel="canonical" href="https://scribewise.dev/ru/">
+<link rel="alternate" hreflang="ru" href="https://scribewise.dev/ru/">
+<link rel="alternate" hreflang="en" href="https://scribewise.dev/en/">
+<link rel="alternate" hreflang="x-default" href="https://scribewise.dev/en/">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://scribewise.dev/ru/">
+<meta property="og:locale" content="ru_RU">
+<meta property="og:locale:alternate" content="en_US">
+<meta property="og:title" content="ScribeWise — отвечает на рабочие сообщения вашим почерком">
+<meta property="og:description" content="Черновики ответов в Telegram в вашем стиле. Ничего не уходит без вашего «да».">
+<meta property="og:image" content="https://scribewise.dev/assets/og-ru.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="ScribeWise — ИИ-секретарь, который отвечает на рабочие сообщения в Telegram вашим почерком">
+<meta property="og:site_name" content="ScribeWise">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="theme-color" content="#F6F1E7">
+<link rel="icon" href="../assets/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="../assets/favicon-32.png" type="image/png" sizes="32x32">
+<link rel="apple-touch-icon" href="../assets/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Caveat:wght@500;600&family=Golos+Text:wght@400;500;600;700&family=Literata:ital,opsz,wght@0,7..72,500..700;1,7..72,500..700&display=swap">
+<link rel="stylesheet" href="../assets/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "ScribeWise",
+  "url": "https://scribewise.dev/ru/",
+  "inLanguage": "ru",
+  "description": "ScribeWise готовит ответы на рабочие сообщения в Telegram вашим стилем, помнит, что вы обещали, и ничего не отправляет без вашего одобрения.",
+  "applicationCategory": "BusinessApplication",
+  "operatingSystem": "Telegram",
+  "image": "https://scribewise.dev/assets/og-ru.png",
+  "offers": {
+    "@type": "Offer",
+    "price": "0",
+    "priceCurrency": "USD"
+  }
+}
+</script>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs><mask id="sw-cut" maskUnits="userSpaceOnUse" x="0" y="0" width="64" height="64"><rect width="64" height="64" fill="#fff"/><path d="M18.5 30.5L28.5 40L47 17.5M28.5 40L32 66" fill="none" stroke="#000" stroke-width="6.6" stroke-linecap="round" stroke-linejoin="round"/></mask></defs>
+  <symbol id="i-logo" viewBox="0 0 64 64"><path d="M22 2H42C44.4 2 45.8 3.2 46.8 5.4C50.6 13 57 19.6 57 27.5C57 33.2 54.4 37.6 50.6 42L32 63L13.4 42C9.6 37.6 7 33.2 7 27.5C7 19.6 13.4 13 17.2 5.4C18.2 3.2 19.6 2 22 2Z" fill="currentColor" mask="url(#sw-cut)"/></symbol>
+  <symbol id="i-check" viewBox="0 0 20 20"><path d="M4.5 10.5l3.5 3.5 7.5-8" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-dash" viewBox="0 0 20 20"><path d="M6 10h8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-tg" viewBox="0 0 24 24"><path d="M21.4 4.2 2.9 11.3c-1 .4-1 1.4 0 1.7l4.6 1.4 1.8 5.5c.2.6.9.8 1.4.4l2.6-2.1 4.7 3.5c.6.4 1.4.1 1.6-.6L22.9 5.6c.2-1-.6-1.8-1.5-1.4zM9.8 14.2l8.4-7.6-6.7 8.6-.3 3-1.4-4z" fill="currentColor"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 20 20"><path d="M10 2.5 18 17H2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M10 8v4.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><circle cx="10" cy="14.6" r="1" fill="currentColor"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M10 6v4.5l3 1.8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-device" viewBox="0 0 26 26"><rect x="7" y="2.5" width="12" height="21" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M11 19.5h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-chats" viewBox="0 0 26 26"><path d="M4 5h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H9l-4 3v-3H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><path d="M20 9h2a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-1v3l-4-3h-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 26 26"><rect x="4.5" y="11" width="17" height="12" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8.5 11V8a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="13" cy="17" r="1.6" fill="currentColor"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 26 26"><circle cx="13" cy="13" r="10" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M13 7.5V13l4 2.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-server" viewBox="0 0 26 26"><rect x="3.5" y="4" width="19" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3.5" y="14.5" width="19" height="7.5" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="7.5" cy="7.8" r="1.2" fill="currentColor"/><circle cx="7.5" cy="18.3" r="1.2" fill="currentColor"/></symbol>
+  <symbol id="i-code" viewBox="0 0 26 26"><path d="M9 7 3.5 13 9 19M17 7l5.5 6-5.5 6M14.5 5l-3 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-qr" viewBox="0 0 26 26"><rect x="3" y="3" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="15" y="3" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="15" width="8" height="8" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15 15h3v3h-3zM20 20h3v3h-3zM20 15h3M15 20v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 20 20"><path d="M10 4v12M4 10h12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 20 20"><path d="M3 6h14M3 10h14M3 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 46 30"><path d="M3 24c10-1 20-6 28-17m0 0-1 8m1-8-8 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-arrow-r" viewBox="0 0 46 30"><path d="M43 24C33 23 21 18 13 7m0 0 1 8m-1-8 8 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+</svg>
+
+<a class="skip" href="#main">К содержанию</a>
+
+<header class="site-header">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="ScribeWise — на главную"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>Scribe<i>Wise</i></span></a>
+    <nav class="nav" id="nav" aria-label="Разделы">
+      <a href="#how">Как работает</a>
+      <a href="#features">Возможности</a>
+      <a href="#privacy">Приватность</a>
+      <a href="#faq">Вопросы</a>
+    </nav>
+    <div class="lang" aria-label="Язык">
+      <span aria-current="true" lang="ru">RU</span>
+      <a href="../en/" lang="en" hreflang="en" data-lang="en">EN</a>
+    </div>
+    <a class="btn btn-primary btn-sm header-cta" href="https://t.me/the_scribewise_bot" data-beta-link>В бету</a>
+    <button class="menu-btn" type="button" aria-expanded="false" aria-controls="nav" aria-label="Меню"><svg aria-hidden="true"><use href="#i-menu"/></svg></button>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">черновик №1<small>для Telegram</small></p>
+        <div class="body hero-grid">
+          <div>
+            <span class="eyebrow">Бета · 30 мест для первых пользователей</span>
+            <h1>Отвечает на рабочие сообщения <span class="ink-word">вашим почерком<svg viewBox="0 0 240 14" preserveAspectRatio="none" aria-hidden="true"><path d="M3 9C42 3 86 12 128 7s78-4 109 1"/></svg></span></h1>
+            <p class="lead">Пока вы на встрече, ScribeWise разбирает рабочие чаты в Telegram и готовит ответы, которые звучат как вы: ваши слова, ваша длина, ваш тон. Вам остаётся нажать «Отправить».</p>
+            <div class="actions">
+              <a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Занять место в бете</a>
+              <a class="btn btn-ghost" href="#how">Посмотреть, как это работает</a>
+            </div>
+            <ul class="trust">
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Без вашего «да» ничего не уходит</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Видит только рабочие чаты</li>
+              <li><svg aria-hidden="true"><use href="#i-check"/></svg>Открытый код</li>
+            </ul>
+          </div>
+
+          <div class="demo" role="img" aria-label="Пример: коллега спрашивает в рабочем чате про отчёт, ScribeWise присылает черновик ответа в вашем стиле с кнопками Отправить, Изменить, Ещё вариант, Отклонить.">
+            <div class="panel">
+              <div class="panel-head"><span class="avatar">АК</span><div><b>Проект «Альфа» · клиент</b><br><span>рабочий чат</span></div></div>
+              <div class="msgs">
+                <p class="bubble"><span class="who">Анна Ковалёва</span>Ирина, привет! Когда ждать отчёт по Q3? Хочу показать его руководству в понедельник.<time>18:42</time></p>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>ваш личный чат с ботом</span></div></div>
+              <div class="draft">
+                <span class="draft-label">Черновик для Анны</span>
+                <p class="draft-text">Анна, привет! Отчёт добиваю, пришлю в пятницу до обеда — к понедельнику успеете спокойно посмотреть.</p>
+                <div class="kbd" aria-hidden="true"><span class="go">✅ Отправить</span><span>✏️ Изменить</span><span>🔁 Ещё вариант</span><span>❌ Отклонить</span></div>
+              </div>
+            </div>
+            <span class="hand hand-1" aria-hidden="true"><svg><use href="#i-arrow-r"/></svg>ваш тон и длина</span>
+            <span class="hand hand-2" aria-hidden="true">без «да» не уйдёт<svg><use href="#i-arrow"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pain -->
+  <section class="section tinted" aria-labelledby="pain-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">знакомо?</p>
+        <div class="body">
+          <h2 id="pain-title">Сколько вечеров в неделю у вас уходит на «когда будет?»</h2>
+          <div class="pains">
+            <div class="pain"><p class="big">Вечер уходит на непрочитанное</p><p>50–200 рабочих сообщений в день, и половина — одни и те же вопросы: «когда?», «посмотрел?», «созвонимся?». Вы отвечаете на них после работы вместо того, чтобы отдыхать.</p></div>
+            <div class="pain"><p class="big">Одно забытое обещание дороже сотни ответов</p><p>«Пришлю в пятницу» в одном чате, та же пятница — в другом. Клиент не вспомнит, как быстро вы отвечали. Он запомнит сорванный срок.</p></div>
+            <div class="pain"><p class="big"><span class="strike">«Конечно! Вот ответ:»</span></p><p>Ответ из ChatGPT видно с первой строки. Собеседник понимает, что вы не писали сами, и доверие тает.</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How -->
+  <section class="section" id="how" aria-labelledby="how-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">как это работает<small>4 шага</small></p>
+        <div class="body">
+          <h2 id="how-title">Четыре шага в чате с ботом — и черновики пишутся сами</h2>
+          <ol class="steps">
+            <li><h3>Подключите Telegram по QR-коду</h3><p>Без номера телефона и кода из СМС. ScribeWise входит в аккаунт как ещё одно устройство, отключить его можно в любой момент.</p></li>
+            <li><h3>Отметьте рабочие чаты</h3><p>Агент читает только их. Переписка с семьёй и друзьями остаётся только вашей.</p></li>
+            <li><h3>Агент изучит ваш стиль</h3><p>По вашим сообщениям за 6 месяцев: тон, длина, обращения, язык. Импорт после этого удаляется, остаются только несколько примеров.</p></li>
+            <li><h3>Отвечайте одной кнопкой</h3><p>Когда вам пишут, готовый черновик ждёт в чате с ботом. Отправить, поправить, переписать или отклонить — секундное дело.</p></li>
+          </ol>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section class="section tinted" id="features" aria-labelledby="features-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">что умеет</p>
+        <div class="body">
+          <h2 id="features-title">Секретарь, которому можно доверить переписку</h2>
+          <div class="features">
+
+            <article class="feature">
+              <div>
+                <h3>Звучит как вы, а не как ChatGPT</h3>
+                <p>ScribeWise прочитал полгода ваших сообщений. Он знает, где вы здороваетесь, а где сразу к делу, с кем вы на «вы», а кому пишете «ок, гляну)». Поэтому ответы не стыдно отправлять как есть.</p>
+                <ul><li>До 20 отдельных стилей: для начальника, коллег и рабочих групп</li><li>Замечает, что вы правите в черновиках, и предлагает новое правило стиля — меняется только с вашего согласия</li><li>Раз в неделю подстраивается под то, как вы пишете сейчас, и показывает, что изменилось</li></ul>
+              </div>
+              <div class="feature-art pair" role="img" aria-label="Один и тот же ответ в двух стилях: официально для руководителя и коротко для коллеги.">
+                <div class="panel"><p class="to">Руководителю</p><p class="bubble out">Добрый день, Сергей Петрович! Отчёт по Q3 будет готов в пятницу, направлю до 12:00.<time>10:14</time></p></div>
+                <div class="panel"><p class="to">Коллеге</p><p class="bubble out">да, в пт до обеда скину)<time>10:15</time></p></div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>Последнее слово всегда за вами</h3>
+                <p>Автоответчик пишет клиенту, не спросив вас. ScribeWise сначала показывает черновик и ждёт решения. Ответ уходит с вашего аккаунта как обычное сообщение — без подписей «отправлено ботом».</p>
+                <ul><li>Отправить, поправить или попросить другой вариант</li><li>Отклонить и ответить самому</li><li>Автоотправка для доверенных чатов и типовых вопросов — когда сами решите <span class="soon">Скоро</span></li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel" role="img" aria-label="Карточка черновика с кнопками одобрения.">
+                  <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>черновик · Дизайн-команда</span></div></div>
+                  <div class="draft">
+                    <p class="draft-text">Макеты посмотрела, в целом огонь. Две правки по главной оставила в комментариях, остальное можно отдавать в разработку.</p>
+                    <div class="kbd" aria-hidden="true"><span class="go">✅ Отправить</span><span>✏️ Изменить</span><span>🔁 Ещё вариант</span><span>❌ Отклонить</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>Не даст пообещать одну пятницу дважды</h3>
+                <p>Агент помнит, что, кому и к какому сроку вы обещали — в чатах и в комментариях Jira, — и сверяет черновик с задачами в Jira и Trello. На «когда будет?» он ответит реальным сроком, а расхождение подсветит до того, как вы нажмёте «Отправить».</p>
+                <ul><li>Все ваши обещания — в одном списке</li><li>Помечает черновики, которые берут на вас новые обязательства</li><li>На «как договаривались» найдёт ту самую переписку и покажет, на что опирался</li><li>Не знает ответа — оставит место для вас, а не сочинит</li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel" role="img" aria-label="Черновик с предупреждением о конфликте сроков.">
+                  <div class="panel-head"><span class="avatar bot"><svg aria-hidden="true"><use href="#i-logo"/></svg></span><div><b>ScribeWise</b><br><span>черновик · Максим, агентство</span></div></div>
+                  <div class="draft">
+                    <p class="draft-text">Максим, давайте. Пятница, 15:00 — подойдёт? Пришлю ссылку на созвон.</p>
+                    <p class="flag"><svg aria-hidden="true"><use href="#i-alert"/></svg><span><b>Конфликт:</b> в пятницу до обеда вы обещали Анне отчёт по Q3 (чат «Проект „Альфа“», 14 окт.).</span></p>
+                    <p class="flag info"><svg aria-hidden="true"><use href="#i-pin"/></svg><span><b>Новое обязательство:</b> созвон в пятницу, 15:00.</span></p>
+                    <div class="kbd" aria-hidden="true"><span class="go">✅ Отправить</span><span>✏️ Изменить</span><span>🔁 Ещё вариант</span><span>❌ Отклонить</span></div>
+                  </div>
+                </div>
+              </div>
+            </article>
+
+            <article class="feature">
+              <div>
+                <h3>Перестаньте быть на связи 24/7</h3>
+                <p>Ночное сообщение подождёт до утра и останется непрочитанным: никто не узнает, что вы его видели. Днём агент «прочитает» его не мгновенно, а через пару минут, как живой человек.</p>
+                <ul><li>Рабочие часы и часовой пояс</li><li>Случайная задержка, например 2–10 минут</li><li>Несколько сообщений подряд — один черновик</li></ul>
+              </div>
+              <div class="feature-art">
+                <div class="panel timeline" role="img" aria-label="Хронология: сообщение в 22:14 ждёт до утра, в 09:07 появляется черновик, в 09:12 вы отправляете ответ.">
+                  <ol class="tl">
+                    <li><time>22:14</time><i class="dot"></i><span>Клиент пишет в рабочий чат<em>Вне рабочих часов: сообщение остаётся непрочитанным</em></span></li>
+                    <li><time>09:00</time><i class="dot wait"></i><span>Начало рабочего дня<em>Задержка 2–10 мин, выпало 7</em></span></li>
+                    <li><time>09:07</time><i class="dot"></i><span>Прочитано, черновик в чате с ботом</span></li>
+                    <li><time>09:12</time><i class="dot ok"></i><span>Вы нажали «Отправить»</span></li>
+                  </ol>
+                </div>
+              </div>
+            </article>
+
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Compare -->
+  <section class="section" aria-labelledby="compare-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">чем отличается</p>
+        <div class="body">
+          <h2 id="compare-title">Автоответчик отвечает за вас. ScribeWise — как вы</h2>
+          <p class="lead">Боты для Telegram пишут клиентам сами и по шаблону. Почтовые ассистенты умеют писать вашим голосом, но не работают в мессенджерах. ScribeWise первым приносит черновики вашим голосом в рабочие чаты Telegram — и единственный сверяет их с вашими задачами и с тем, что вы уже пообещали.</p>
+          <div class="table-scroll">
+            <table class="compare">
+              <thead><tr>
+                <th scope="col"><span class="visually-hidden">Возможность</span></th>
+                <th scope="col" class="us">ScribeWise<small>ваша рабочая переписка</small></th>
+                <th scope="col">ИИ в самом Telegram<small>Chat Automation, AI Styles</small></th>
+                <th scope="col">Автоответчики<small>Chat Data, Smartbot, SendPulse</small></th>
+                <th scope="col">Почтовые ассистенты<small>Fyxer, Superhuman, Inbox Zero</small></th>
+              </tr></thead>
+              <tbody>
+                <tr><th scope="row">Пишет вашим стилем, выученным по вашей переписке</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="part">стиль задаёте подсказкой</span></td><td><span class="part">редко, по описанию</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td></tr>
+                <tr><th scope="row">Знает ваши обещания и задачи, ловит конфликты сроков</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">нет</span></span></td><td><span class="part">отвечают по базе знаний</span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">нет</span></span></td></tr>
+                <tr><th scope="row">Ничего не отправляет без вашего одобрения</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>бот отвечает сам</span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>бот отвечает сам</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td></tr>
+                <tr><th scope="row">Автоотправка там, где вы доверяете</th><td class="us"><span class="soon">Скоро</span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">нет</span></span></td></tr>
+                <tr><th scope="row">Работает в рабочих чатах Telegram</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg>нет Telegram</span></td></tr>
+                <tr><th scope="row">Можно развернуть на своём сервере</th><td class="us"><span class="yes"><svg aria-hidden="true"><use href="#i-check"/></svg><span class="visually-hidden">да</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">нет</span></span></td><td><span class="no"><svg aria-hidden="true"><use href="#i-dash"/></svg><span class="visually-hidden">нет</span></span></td><td><span class="part">только Inbox Zero</span></td></tr>
+                <tr><th scope="row">Цена в месяц</th><td class="us"><b class="price-cell">Self-hosted бесплатно</b></td><td><span class="part">бесплатно</span></td><td><span class="part">до $99</span></td><td><span class="part">$18–49</span></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <p class="table-note">По данным сайтов продуктов на 20 октября 2026 года.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="section tinted" id="privacy" aria-labelledby="privacy-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">приватность</p>
+        <div class="body">
+          <h2 id="privacy-title">Ваши чаты остаются вашими</h2>
+          <p class="lead">Мы просим доступ к самому личному — вашей переписке. Поэтому доверять ScribeWise можно не на слово, а по фактам.</p>
+          <ul class="facts">
+            <li><svg aria-hidden="true"><use href="#i-device"/></svg><div><b>Подключается как второе устройство</b><p>Отключить можно в Telegram: <code>Настройки → Устройства</code>. Сессия агента завершится сразу.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-chats"/></svg><div><b>Только выбранные чаты</b><p>Сообщения из остальных чатов агент не читает и не сохраняет.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-lock"/></svg><div><b>Шифрование и 30 дней хранения</b><p>Сообщения хранятся в зашифрованном виде и удаляются автоматически через 30 дней.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-code"/></svg><div><b>Открытый код</b><p>Можно проверить, что агент делает с вашими данными, и развернуть его в Docker на своём сервере со своим ключом API.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-qr"/></svg><div><b>Вход по QR-коду</b><p>Подключение без номера телефона и кода из СМС: отсканируйте код с устройства, где вы уже вошли в Telegram.</p></div></li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg><div><b>Данные под вашим контролем</b><p><code>/my_data</code> показывает и выгружает всё, что хранится, а <code>/delete_my_data</code> удаляет всё и отключает агента.</p></div></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pricing -->
+  <section class="section" id="pricing" aria-labelledby="pricing-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">сколько стоит</p>
+        <div class="body">
+          <h2 id="pricing-title">Начните бесплатно</h2>
+          <div class="plans">
+            <div class="plan">
+              <h3>Self-hosted</h3>
+              <p class="price">Бесплатно навсегда<small>на вашем сервере</small></p>
+              <ul>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Все функции, один пользователь</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Docker на вашем сервере</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Свой ключ API, данные не покидают ваш контур</li>
+              </ul>
+              <a class="btn btn-ghost" href="https://t.me/the_scribewise_bot" data-beta-link>Запросить self-hosted</a>
+            </div>
+            <div class="plan featured">
+              <h3>Облако</h3>
+              <p class="price">Ранний доступ<small>для 30 бета-тестеров — особые условия после запуска</small></p>
+              <ul>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Подключение в чате с ботом, без Docker и API-ключей</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Личная помощь с настройкой</li>
+                <li><svg aria-hidden="true"><use href="#i-check"/></svg>Цены объявим бета-тестерам первыми</li>
+              </ul>
+              <a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Занять место в бете</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Next -->
+  <section class="section tinted" aria-labelledby="next-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">дальше</p>
+        <div class="body">
+          <h2 id="next-title">Что появится дальше</h2>
+          <ul class="next">
+            <li><svg aria-hidden="true"><use href="#i-chats"/></svg>Yandex Messenger</li>
+                        <li><svg aria-hidden="true"><use href="#i-pin"/></svg>Задачи из Yandex Tracker</li>
+            <li><svg aria-hidden="true"><use href="#i-check"/></svg>Автоотправка для доверенных чатов</li>
+            <li><svg aria-hidden="true"><use href="#i-chats"/></svg>Пропуск сообщений, на которые не нужно отвечать</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- FAQ -->
+  <section class="section" id="faq" aria-labelledby="faq-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">вопросы</p>
+        <div class="body">
+          <h2 id="faq-title">Частые вопросы</h2>
+          <div class="faq">
+            <details>
+              <summary>Зачем ScribeWise, если в Telegram уже есть ИИ?</summary>
+              <div class="answer"><p>Встроенный ИИ Telegram решает другие задачи. AI Styles переписывает текст, который вы уже написали, в заданном стиле. Chat Automation подключает бота, который отвечает собеседникам сам.</p><p>ScribeWise сам готовит ответ на входящее сообщение, пишет его так, как пишете вы, по полугоду вашей переписки, и ничего не отправляет без вашего одобрения. А ещё сверяет ответ с вашими обещаниями и задачами в Jira и Trello.</p></div>
+            </details>
+            <details>
+              <summary>Это безопасно? У агента полный доступ к аккаунту?</summary>
+              <div class="answer"><p>Технически да: ScribeWise входит в Telegram как ещё одно ваше устройство, и Telegram не позволяет дать такому устройству доступ только к части чатов. Поэтому ограничения стоят на стороне агента. Он читает и хранит только чаты, которые вы отметили, шифрует сообщения и удаляет их через 30 дней.</p><p>Отключить агента можно в любой момент: <b>Настройки → Устройства</b> в Telegram. Код открытый, а self-hosted версия работает целиком на вашем сервере.</p></div>
+            </details>
+            <details>
+              <summary>Может ли Telegram заблокировать аккаунт?</summary>
+              <div class="answer"><p>Риск есть, и мы его не скрываем: Telegram с подозрением относится к автоматизации личных аккаунтов. ScribeWise снижает его как может: не делает рассылок, работает только в выбранных чатах, отвечает в человеческом темпе и отправляет только то, что вы одобрили.</p></div>
+            </details>
+            <details>
+              <summary>Собеседники узнают, что ответ подготовил ИИ?</summary>
+              <div class="answer"><p>Ответ уходит с вашего аккаунта как обычное сообщение, без пометок и подписей. А звучит он как вы: стиль взят из ваших же сообщений.</p></div>
+            </details>
+            <details>
+              <summary>Какая модель пишет черновики и куда уходит текст?</summary>
+              <div class="answer"><p>Черновики пишет Claude от Anthropic. Чтобы составить ответ, текст переписки из выбранных чатов передаётся провайдеру модели за рубежом. Учитывайте это, если у вашей компании строгие требования к данным.</p><p>В self-hosted версии вы используете свой ключ API и сами выбираете провайдера.</p></div>
+            </details>
+            <details>
+              <summary>Что, если черновик мне не подходит?</summary>
+              <div class="answer"><p>Нажмите «Изменить» и поправьте текст, «Ещё вариант» — чтобы агент переписал, или «Отклонить» — и ответьте сами. Агент не напишет собеседнику ни слова без вашего одобрения.</p></div>
+            </details>
+            <details>
+              <summary>На каком языке он отвечает?</summary>
+              <div class="answer"><p>На том, на котором вы обычно пишете в этом чате. Если с одним клиентом вы общаетесь по-английски, а с командой по-русски, черновики будут такими же.</p></div>
+            </details>
+            <details>
+              <summary>Сколько это стоит?</summary>
+              <div class="answer"><p>Self-hosted версия бесплатна. Облако сейчас в раннем доступе: условия и цены мы сначала объявим бета-тестерам.</p></div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Final CTA -->
+  <section class="section tinted final" aria-labelledby="final-title">
+    <div class="wrap sheet">
+      <div class="row">
+        <p class="note" aria-hidden="true">P.S.</p>
+        <div class="body">
+          <h2 id="final-title">30 мест в бете. <span class="ink-word">Одно — ваше<svg viewBox="0 0 240 14" preserveAspectRatio="none" aria-hidden="true"><path d="M3 9C42 3 86 12 128 7s78-4 109 1"/></svg></span></h2>
+          <p class="lead">Для руководителей, аккаунт-менеджеров, фрилансеров и основателей, у которых работа живёт в Telegram. Первые пользователи получают личную помощь с настройкой, особые условия облака и прямую связь с командой: ваши пожелания мы услышим первыми.</p>
+          <div class="actions"><a class="btn btn-primary" href="https://t.me/the_scribewise_bot" data-beta-link><svg aria-hidden="true"><use href="#i-tg"/></svg>Занять место в бете</a></div>
+          <p class="fine">Откроется бот в Telegram: отправьте /start, нажмите «Хочу в бету» и расскажите, как планируете им пользоваться.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <a class="brand" href="./"><svg aria-hidden="true"><use href="#i-logo"/></svg><span>Scribe<i>Wise</i></span></a>
+    <span>© <span data-year>2026</span> ScribeWise</span>
+    <nav aria-label="Ссылки в подвале">
+      <a href="https://t.me/the_scribewise_bot" data-beta-link>Telegram</a>
+      <a href="#" data-repo-link hidden>GitHub</a>
+      <a href="../en/" lang="en" hreflang="en" data-lang="en">English</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="../assets/main.js" defer></script>
+</body>
+</html>

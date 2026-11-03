@@ -1,0 +1,53 @@
+# LLM route table for DeepSeek's OpenAI-compatible API (https://api.deepseek.com), used by the
+# CI evaluation set and usable for a deployment. Pick it with
+# SCRIBE_LLM_ROUTES_PATH=config/llm_routes.deepseek.yml (service) or
+# ``make eval ROUTES=config/llm_routes.deepseek.yml``; set DEEPSEEK_API_KEY and DEEPSEEK_BASE_URL.
+#
+# Privacy: DeepSeek stores data in the People's Republic of China, and its privacy policy lists
+# user input among the data used "to train and improve our technology" (opt-out by email to
+# privacy@deepseek.com). So data_use_confirmed is false here and the service refuses to start
+# on this table until you attest it yourself, after reading docs/self-hosting.md
+# "Choosing models":
+#   SCRIBE_LLM__PROVIDERS__OPENAI_COMPAT__DATA_USE_CONFIRMED=true
+# CI sets it because the evaluation threads are synthetic.
+#
+# Models (api-docs.deepseek.com/quick_start/pricing, checked 2026-10-31): deepseek-flash
+# (cheap, for filtering, classification and extraction) and deepseek-v4-pro (drafts and style
+# profiles). Both have a 1M-token context and up to 384K output tokens; thinking is on by
+# default and max_tokens counts the reasoning too. With reasoning_effort: true each route's
+# effort is sent as reasoning_effort (DeepSeek knows low / high / max and treats medium as
+# high); with disable_thinking: true, effort: none sends thinking: {type: disabled} instead
+# (api-docs.deepseek.com/api/create-chat-completion and guides/thinking_mode, checked
+# 2026-10-31). DeepSeek accepts response_format json_object but not json_schema, so the schema
+# goes into the prompt (native_json_schema: false, scribe.llm.schema_fallback). Prompt caching
+# is automatic and needs no flag; DeepSeek has no batch API, so profile.build runs as one call.
+#
+# Thinking per route (issue #68, measured on the evaluation set): off for the reply gate and
+# the filter (which also ranks the earlier-conversation matches), whose short structured
+# answers need no reasoning; low for extraction and drafts. max_tokens on the small routes
+# keeps a wide margin over the largest single output of the evaluation set (2026-11-01): 32
+# tokens for the gate and 65 for the filter with thinking off, 305 for extraction at low
+# (reasoning included), 3979 for a draft at low. profile.build is not in the evaluation set and
+# thinks at high, so it keeps DeepSeek's own 64K thinking-mode ceiling (what applied before
+# max_tokens_param existed) instead of a guess; a truncated build still retries once lighter.
+routes:
+  retrieve.filter_context: {provider: openai_compat, model: deepseek-flash,  effort: none,   max_tokens: 2000}
+  classify.reply_needed:   {provider: openai_compat, model: deepseek-flash,  effort: none,   max_tokens: 2000}
+  extract.commitments:     {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 4000}
+  extract.deadlines:       {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 4000}
+  compose.draft:
+    tiers:
+      quality:             {provider: openai_compat, model: deepseek-v4-pro, effort: low,    max_tokens: 16000}
+      economy:             {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 16000}
+  profile.build:           {provider: openai_compat, model: deepseek-v4-pro, effort: high,   max_tokens: 64000}
+  eval.style_judge:        {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 8000}
+providers:
+  anthropic:     {api_key_env: ANTHROPIC_API_KEY, data_use_confirmed: true}
+  openai_compat:
+    api_key_env: DEEPSEEK_API_KEY
+    base_url_env: DEEPSEEK_BASE_URL
+    data_use_confirmed: false     # see "Privacy" above; attest with the env override
+    native_json_schema: false
+    reasoning_effort: true
+    disable_thinking: true        # effort: none -> thinking: {type: disabled}
+    max_tokens_param: max_tokens  # DeepSeek ignores max_completion_tokens
