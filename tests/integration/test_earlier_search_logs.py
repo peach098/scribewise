@@ -86,7 +86,9 @@ async def test_one_event_per_draft_without_content(
     assert event["dropped_unlinked"] == 0
     assert all(isinstance(event[k], int) for k in ("duration_ms", "rank_ms", "total_ms"))
     raw = log_capture.raw
-    for secret in (QUERY_A, QUERY_B, "zx7781", FOUND_TEXT, INCOMING_TEXT, DRAFT_TEXT, "4242"):
+    # "сумма 4242", not a bare "4242": ids and timestamps in the log are hex/digits and can
+    # contain any four digits (a turn_id "...-4242-..." failed this check once).
+    for secret in (QUERY_A, QUERY_B, "zx7781", FOUND_TEXT, INCOMING_TEXT, DRAFT_TEXT, "сумма 4242"):
         assert secret not in raw
 
 
