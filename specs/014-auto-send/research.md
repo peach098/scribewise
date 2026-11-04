@@ -29,7 +29,7 @@ last structural guard of Principle I).
 **Decision**: A timestamp column `drafts.auto_send_due_at` plus `drafts.auto_send_stop`
 (enum, NULL while the countdown runs). A new scheduler step `_step_auto_sends` selects pending
 drafts with `auto_send_due_at <= now AND auto_send_stop IS NULL AND auto_approved_at IS NULL
-AND NOT outdated`, `FOR UPDATE SKIP LOCKED`, through the existing `_draft_step` helper
+AND NOT outdated AND control_message_id IS NOT NULL` (A4a), `FOR UPDATE SKIP LOCKED`, through the existing `_draft_step` helper
 (`scheduling/scheduler.py:412`). Its handler re-checks eligibility (A4) under the lock and
 either sets `auto_approved_at` and returns an `AfterCommit` that calls `send_approved_draft`,
 or sets `auto_send_stop` with the reason and returns an `AfterCommit` that re-renders the card
@@ -82,10 +82,11 @@ reasons for
 | `warning:<code>` | any other system or context warning not in `AUTO_SEND_ALLOWED_WARNINGS` (empty in this release) |
 | `no_output` | `draft_output_of` returned `None` |
 | `outdated` | `draft.outdated` |
+| `possibly_unnecessary` | `draft.possibly_unnecessary` (the reply gate thinks no reply is needed) |
 | `chat_off` | `work_chats.auto_send` false or chat disabled/excluded |
 | `outside_hours` | `next_allowed(due) != due` (only at fire time) |
 | `suspended` | `users.access_suspended_at` set |
-| `not_first_version` | `draft.version > 1` (a regenerated draft was asked for by the user, who is present) |
+| `not_first_version` | `draft.version > 1` or a placeholder-filled version (FR-008: the user asked for it and is present) |
 
 **Rationale**: an allow-list of warnings means a warning added later cannot silently become
 auto-sendable; the constitution and `injection.py` docstring name `hard_stops` as the seam.
@@ -94,6 +95,37 @@ except for state that changed in between (which then reverts the card, FR-012).
 
 **Alternatives considered**: deny-list of known warnings (unsafe by default); check only at
 fire time (card could not show the countdown honestly).
+
+## A4a. The countdown starts only after the card is in the control chat (FR-006)
+
+**Decision**: Arming is split in two and lives in `DraftPresenter.post_card`, whoever calls it
+(`DueTurnsProcessor` now, the card retry of issue #15 later):
+
+1. `plan_arm` (before posting, no write): arm-time eligibility and `planned = now + window`.
+   The card is posted with `card.auto_send_at = planned`, or with `card.auto_send_manual` and
+   the reasons.
+2. `commit_arm` (in the transaction that stores `control_message_id`): locks the draft,
+   re-checks eligibility and sets `auto_send_due_at = max(planned, stored_at + window)`.
+
+If posting fails, nothing is armed: the draft stays an ordinary pending draft (as today after
+`draft_card_failed`). When a later post of the same draft succeeds, the same two steps run at
+that moment, so the countdown starts then, with the full window counted from the moment the
+card appeared. If `commit_arm` fails or finds the draft ineligible after a successful post,
+the card is re-rendered with `show_manual` (best effort) and `auto_send_arm_failed` /
+`auto_send_blocked phase=arm` is logged; a card that still shows a countdown then waits for
+an ordinary Send (safe direction).
+
+Guards: the step selects only drafts with `control_message_id IS NOT NULL`, and the DB check
+`ck_drafts_auto_send_needs_card` (`auto_send_due_at IS NULL OR control_message_id IS NOT NULL`)
+makes an armed draft without a card impossible.
+
+**Rationale**: Principle I and FR-006: a draft the user has not seen must never leave on its
+own; the user always gets the full window from the moment the card appears, and the send is
+never earlier than the time printed on the card.
+
+**Alternatives considered**: arm before posting (a failed post leaves an armed, invisible
+draft); post without the countdown line and add it by editing after arming (a failed edit
+leaves an armed draft whose card does not say so).
 
 ## A5. Statistics source (FR-013, FR-014)
 
@@ -137,9 +169,10 @@ never raises. It evaluates, under `SELECT … FOR UPDATE` of the work chat:
   past, ≥ 20 counted decisions, rate > 0.60, and `users.auto_send_last_offer_at` older than
   24 h (FR-018). It sets `auto_send_offer_not_before = now + 30 d` and
   `users.auto_send_last_offer_at = now` before posting, so a crash cannot repeat it.
-- suggestion to turn off: auto-send on, last 10 drafts with `during_auto_send` in the chat,
-  interventions (`auto_cancelled`, `sent_edited`, `rejected`, `regenerated` with
-  `during_auto_send`) > 4, `auto_send_warned_at` older than 7 days.
+- suggestion to turn off: auto-send on, at least 10 drafts with `during_auto_send` in the
+  chat, and among the last 10 the interventions (a draft with an `auto_cancelled`,
+  `sent_edited`, `rejected` or `regenerated` row) > 4, `auto_send_warned_at` older than 7
+  days. A Send now without changes (`sent_unchanged`) and `auto_sent` are not interventions.
 
 A chat that qualifies only because of decisions made before a later dip still needs the next
 decision to trigger; no periodic scan.
@@ -154,7 +187,7 @@ test).
 
 **Decision**: The card shows a static line "⏱ Will be sent automatically at 14:32" (time in the
 user's zone, `format_when`) and is not edited every second. Keyboard: ✅ Send now
-(`approve:<id>`), ✏️ Edit, ⏹ Cancel auto-send (`autostop:<id>`), 🔁, ❌, 🧾. A draft that is
+(`approve:<id>`), ✏️ Edit, ⏹ Don't send automatically (`autostop:<id>`), 🔁, ❌, 🧾. A draft that is
 not eligible in an auto-send chat shows "Needs your approval: <reasons>" (FR-012).
 
 **Rationale**: Telegram limits message edits; a live counter adds load and nothing a clock

@@ -49,6 +49,8 @@ Constraints:
   auto_approved_at IS NOT NULL`.
 - `ck_drafts_auto_approved_needs_window`: `auto_approved_at IS NULL OR auto_send_due_at IS NOT
   NULL`.
+- `ck_drafts_auto_send_needs_card`: `auto_send_due_at IS NULL OR control_message_id IS NOT
+  NULL` (research A4a: no countdown without a posted card).
 - No exclusivity check between the two approvals: after `send_failed` the user's Send sets
   `approved_by_user_at` on a row that already has `auto_approved_at`, and the retry reuses the
   same `send_random_id` (Telegram deduplicates). `/history` then shows both, in order.
@@ -60,7 +62,10 @@ Retention: the three columns are metadata and survive the 30-day content purge.
 ### Countdown state machine (one pending draft)
 
 ```text
-  card posted, eligible          ─► ARMED   (due_at = now + window, stop = NULL)
+  card post failed               ─► NO CARD (due_at = NULL); never auto-sent
+  NO CARD + later post succeeds  ─► same as "card posted" below, at that moment (issue #15)
+  card posted, eligible          ─► ARMED   (due_at = max(planned, stored_at + window),
+                                             stored together with control_message_id)
   card posted, not eligible      ─► MANUAL  (due_at = NULL) card lists reasons
   ARMED + user taps any action   ─► STOPPED (stop = user_action)  → ordinary pending
   ARMED + new incoming message   ─► STOPPED (stop = outdated)     → existing outdated card
@@ -97,9 +102,10 @@ Writers (same transaction as the action): `_approve_and_send` result (unchanged/
 Readers:
 - **Offer rate** (FR-014/FR-015): rows in the last 30 days with `decision NOT IN ('auto_sent',
   'auto_cancelled')`; rate = `sent_unchanged / count`; needs `count >= 20` and rate `> 0.60`.
-- **Intervention rate** (FR-020): last 10 rows with `during_auto_send` grouped by `draft_id`
-  (one outcome per draft: `auto_sent` = no intervention, anything else = intervention);
-  suggest when interventions `> 4`.
+- **Intervention rate** (FR-020): the last 10 drafts with `during_auto_send` rows (one outcome
+  per `draft_id`): intervention = the draft has an `auto_cancelled`, `sent_edited`,
+  `rejected` or `regenerated` row; `sent_unchanged` (Send now) and `auto_sent` are not.
+  Evaluated only when there are at least 10 such drafts; suggest when interventions `> 4`.
 
 Retention: `purge_messages` deletes rows with `at < now - 31 days`.
 

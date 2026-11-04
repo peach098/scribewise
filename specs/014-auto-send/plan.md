@@ -9,8 +9,10 @@
 An opt-in, per-chat auto-send mode. When a first-version draft in a chat with auto-send on
 passes a fail-closed eligibility check (no hard stop, promise, sensitive flag, placeholder,
 date mismatch, conflict, weak style, out-of-office or any other warning), the card is posted
-with "will be sent automatically at HH:MM" and `drafts.auto_send_due_at` is set to the end of
-the user's cancel window (2 min default, 1–15). A new scheduler step picks due drafts with
+with "will be sent automatically at HH:MM", and only once the card is in the bot chat is
+`drafts.auto_send_due_at` set to the end of the user's cancel window (2 min default; 1, 2, 5,
+10 or 15) counted from that moment. A draft whose card failed to post is never armed; a later
+successful post (card retry, issue #15) arms it then. A new scheduler step picks due drafts with
 `FOR UPDATE SKIP LOCKED`, re-checks eligibility and working hours, sets a new
 `drafts.auto_approved_at` (never the user's `approved_by_user_at`) and sends through the
 existing `send_approved_draft`. Any tap on the card, a new incoming message, pause, or turning
@@ -57,7 +59,7 @@ month.
 
 | Principle | Check | Status |
 |---|---|---|
-| I. Human approval before sending | Opt-in per chat with an explicit confirmation (FR-003), off by default (`work_chats.auto_send` default false), scoped to one chat (no global on switch, FR-002), reversible in ≤ 2 taps including everywhere at once (FR-004). Every draft still passes the approve / edit / reject card, now with a cancel window. Hard stops are refused by a fail-closed check at arm and at fire time. Automatic sends are attributable: separate `auto_approved_at`, `auto_approved` activity, `sent.meta.auto`, and the DB check still refuses a sent row with no approval of either kind. | Pass |
+| I. Human approval before sending | Opt-in per chat with an explicit confirmation (FR-003), off by default (`work_chats.auto_send` default false), scoped to one chat (no global on switch, FR-002), reversible in ≤ 2 taps including everywhere at once (FR-004). Every draft still passes the approve / edit / reject card, now with a cancel window that starts only once the card is posted (A4a; DB check `ck_drafts_auto_send_needs_card`). Hard stops are refused by a fail-closed check at arm and at fire time. Automatic sends are attributable: separate `auto_approved_at`, `auto_approved` activity, `sent.meta.auto`, and the DB check still refuses a sent row with no approval of either kind. | Pass |
 | II. Privacy & data minimization | `draft_decisions` holds ids, a decision code and a timestamp; no text. New columns are flags and times. All in `/my_data`, cascade-deleted, decisions purged after 31 days. Logs carry ids and reason codes. | Pass |
 | III. Grounded replies | Draft generation unchanged. Drafts that commit the user (promise, dates differ) or need details (placeholders) are never auto-sent, so the existing "extra attention" flags keep a human in the loop. | Pass |
 | IV. Faithful style | Unchanged; weak-style drafts are never auto-sent. | Pass |
@@ -132,6 +134,8 @@ further, with only the `/settings` and `/chats` lines added there.
 
 ## Key Design Decisions
 
+0. **No countdown without a card** (A4a): arming happens in `post_card` after the card is
+   stored; scheduler condition and DB check `ck_drafts_auto_send_needs_card` back it up.
 1. **Separate automatic approval** (A1): `auto_approved_at` beside `approved_by_user_at`; the
    DB constraint still refuses any unapproved sent row.
 2. **Countdown as a row timestamp** (A2) polled by the existing scheduler; restart-safe, no
@@ -158,6 +162,8 @@ further, with only the `/settings` and `/chats` lines added there.
 - **Scheduler step ordering**: the auto-send step runs after due turns in the same tick, so a
   very short window cannot fire before its card is posted (arming happens before `post_card`
   but `due_at ≥ now + 60 s`).
+- **Card retry is a separate change** (issue #15): until it lands, a draft whose card failed
+  stays without a card as today; it is never auto-sent.
 - **Group chats** reply with a quote (`reply_to_for`); unchanged, but worth one manual check
   (quickstart Q1 in a group).
 
@@ -167,7 +173,7 @@ No constitution violations.
 
 ## Phase Summary
 
-- Phase 0 ([research.md](research.md)): A1–A11 resolved; no open NEEDS CLARIFICATION.
+- Phase 0 ([research.md](research.md)): A1–A11 and A4a resolved; no open NEEDS CLARIFICATION.
 - Phase 1: [data-model.md](data-model.md), [contracts/internal-interfaces.md](contracts/internal-interfaces.md),
   [contracts/control-chat.md](contracts/control-chat.md), [quickstart.md](quickstart.md).
 - Agent context: `.specify/scripts/bash/update-agent-context.sh` does not exist in this repo;

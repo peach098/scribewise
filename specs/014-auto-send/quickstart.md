@@ -36,6 +36,7 @@ asserts the DB refuses `state='sent'` with neither approval.
 | Q8 | With auto-send off: decide 20 drafts in the chat, 13 sent unchanged (65%) | One offer "13 of 20 …" after the 20th decision; Not now → no offer for 30 days (advance clock in tests). With 12 of 20 (60%) → no offer. |
 | Q9 | With auto-send on: cancel or edit 5 of 10 auto-send cards | One suggestion to turn off, not repeated within 7 days. |
 | Q10 | `/my_data` | Export contains `draft_decisions` rows and the new chat/user fields; no message text in them. |
+| Q11 | Stop the bot's network access (or block `api.telegram.org`) and let the colleague write; restore it after 5 min | No card and no reply while blocked; nothing is sent automatically. Until issue #15 lands the draft stays without a card (as today); with #15, the card appears after the retry and its countdown starts from that moment |
 
 ## Logs
 

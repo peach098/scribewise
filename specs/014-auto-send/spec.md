@@ -41,13 +41,13 @@ countdown ends, and that Cancel during the countdown leaves the draft pending as
    what will happen and, after confirmation, shows the chat as "auto-send on".
 2. **Given** auto-send is on for a chat, **When** an eligible draft is prepared, **Then** the
    draft card in the bot chat says it will be sent automatically, shows the remaining cancel
-   window, and offers **Send now**, **Edit**, **Cancel auto-send** and **Reject**.
+   window, and offers **Send now**, **Edit**, **Don't send automatically** and **Reject**.
 3. **Given** a card with a running cancel window, **When** the window ends without any action
    from the user, **Then** the reply is sent from the user's account like an approved reply,
    the card is updated to "sent automatically", and the action appears in `/history` as
    automatic.
-4. **Given** a card with a running cancel window, **When** the user taps **Cancel auto-send**
-   or **Edit**, **Then** the countdown stops and the draft becomes an ordinary pending draft
+4. **Given** a card with a running cancel window, **When** the user taps **Don't send
+   automatically** or **Edit**, **Then** the countdown stops and the draft becomes an ordinary pending draft
    that needs the usual approval.
 5. **Given** auto-send is on for a chat, **When** the user turns it off, **Then** no further
    drafts in that chat are sent automatically, and drafts whose cancel window is still
@@ -114,6 +114,13 @@ Scribe suggests turning it off there.
 
 ### Edge Cases
 
+- The card cannot be posted to the bot chat (Bot API error, flood wait, network failure):
+  nothing is sent automatically. When the card is posted later (retry, issue #15), the
+  countdown starts only then, with the full window counted from the moment the card
+  appeared, and eligibility is checked again at that moment. The send never happens earlier
+  than the time printed on the card.
+- The user deletes the card message in the bot chat: Telegram does not report this, so it is
+  not treated as cancelling; the draft is sent at the printed time. The help text says so.
 - A draft carries any hard stop (suspected prompt injection, a claim of an action a reply
   cannot perform, a new commitment or a date conflict with a task, a sensitive-topic flag, or
   an unfilled `[[…]]` placeholder): it is never sent automatically; the card says why and
@@ -160,12 +167,17 @@ Scribe suggests turning it off there.
   sensitive-topic flag, unfilled placeholder), the chat's style profile is not under the
   weak-style warning, and neither pause nor out-of-office mode is active.
 - **FR-006**: Every auto-send draft MUST still be shown to the user in the bot chat before
-  it is sent, with a visible cancel window and the actions Send now, Edit, Cancel auto-send
-  and Reject.
+  it is sent, with a visible cancel window and the actions Send now, Edit, Don't send
+  automatically and Reject. The countdown MUST start only after the card has been posted
+  successfully, MUST last the full window from that moment, and the send MUST NOT happen
+  earlier than the time printed on the card. A draft whose card has not been posted MUST
+  never be sent automatically.
 - **FR-007**: The cancel window MUST default to 2 minutes and MUST be adjustable by the user
-  between 1 and 15 minutes.
-- **FR-008**: Any user action on the card during the cancel window (Edit, Cancel auto-send,
-  Reject, Regenerate) MUST stop the countdown; Send now MUST send immediately.
+  to one of 1, 2, 5, 10 or 15 minutes.
+- **FR-008**: Any user action on the card during the cancel window (Edit, Don't send
+  automatically, Reject, Regenerate) MUST stop the countdown; Send now MUST send immediately.
+  A draft produced by Regenerate or by filling placeholders MUST NOT be sent automatically:
+  the user is already deciding on it.
 - **FR-009**: New messages in the chat or a manual reply by the user during the cancel window
   MUST stop the countdown and follow the existing handling for those events.
 - **FR-010**: A draft MUST NOT be sent automatically outside the user's working hours; if the
@@ -202,7 +214,8 @@ Scribe suggests turning it off there.
 - **FR-020**: When, among the last 10 auto-send drafts in a chat, the user intervened
   (cancelled, edited, rejected or regenerated) in more than 4, Scribe MUST suggest turning
   auto-send off for that chat, with the figures; the suggestion MUST NOT repeat for that chat
-  within 7 days.
+  within 7 days. It is evaluated only once the chat has at least 10 auto-send drafts. Sending
+  early with Send now without changes is not an intervention.
 - **FR-021**: Removing a chat from work chats (or excluding it from work account mode) MUST
   turn auto-send off for that chat.
 - **FR-022**: Every change to auto-send settings (enabled, disabled, offer shown, offer
@@ -230,8 +243,9 @@ Scribe suggests turning it off there.
 
 ### Measurable Outcomes
 
-- **SC-001**: 0 drafts with a hard stop are ever sent automatically (verified across the
-  evaluation set and automated tests covering every hard-stop type).
+- **SC-001**: 0 drafts with a hard stop, and 0 drafts whose card was not shown, are ever sent
+  automatically (verified by automated tests covering every block reason, at both the arming
+  and the sending check, and a failed card post).
 - **SC-002**: 0 messages are sent automatically in chats where the user has not enabled
   auto-send, or after the user disabled it.
 - **SC-003**: Offers appear only for chats that meet the threshold: 100% of offers shown
@@ -255,6 +269,9 @@ Scribe suggests turning it off there.
 - The cancel window is a safety net, not a "typing" imitation; the existing reading delay
   before drafting still applies unchanged.
 - Auto-send reuses the existing send path and hard-stop checks; no new message channels.
+- Retrying a card that failed to post is a separate change (issue #15). This feature only
+  guarantees that the countdown starts whenever, and only when, a card post succeeds, so it
+  works with that retry without further changes.
 - The out-of-office replies of `/ooo` are never sent automatically in this release.
 - Revoking auto-send automatically (rather than suggesting it) is out of scope for this
   release; Scribe only suggests turning it off (FR-020).

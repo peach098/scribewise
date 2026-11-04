@@ -12,7 +12,7 @@ class BlockReason(StrEnum):
     weak_style = "weak_style"; out_of_office = "out_of_office"; warning = "warning"
     no_output = "no_output"; outdated = "outdated"; chat_off = "chat_off"
     outside_hours = "outside_hours"; suspended = "suspended"; paused = "paused"
-    not_first_version = "not_first_version"
+    not_first_version = "not_first_version"; possibly_unnecessary = "possibly_unnecessary"
 
 AUTO_SEND_ALLOWED_WARNINGS: frozenset[str] = frozenset()
 
@@ -32,18 +32,32 @@ def eligibility(
 Rules: research A4. Fail closed: unknown warning → `warning`. Never raises. Deterministic for
 the same inputs (unit-tested table, SC-001).
 
-## 2. Arming (called once, when a first-version card is posted)
+## 2. Arming (in `DraftPresenter.post_card`, whoever calls it; research A4a)
 
 ```python
-async def arm(session: AsyncSession, *, draft_id: UUID, now: datetime) -> Eligibility | None:
-    """Lock the draft (FOR UPDATE), then its chat and user (FOR SHARE).
-    Returns None when the chat has auto-send off (card is ordinary, no line).
-    Eligible: set drafts.auto_send_due_at = now + users.auto_send_window_s.
-    Not eligible: leaves due_at NULL; the caller renders card.auto_send_manual."""
+@dataclass(frozen=True)
+class ArmPlan:
+    planned_due_at: datetime | None      # None: not eligible
+    reasons: tuple[BlockReason, ...]
+
+async def plan_arm(session: AsyncSession, *, draft_id: UUID, now: datetime) -> ArmPlan | None:
+    """Read-only. None when the chat has auto-send off (ordinary card, no line).
+    Otherwise eligibility() and planned_due_at = now + users.auto_send_window_s if eligible."""
+
+async def commit_arm(session: AsyncSession, *, draft_id: UUID, plan: ArmPlan,
+                     control_message_id: int, stored_at: datetime) -> bool:
+    """In the transaction that stores control_message_id. Locks the draft (FOR UPDATE),
+    chat and user (FOR SHARE), re-checks eligibility. Eligible: sets
+    auto_send_due_at = max(plan.planned_due_at, stored_at + window) and returns True.
+    Otherwise sets nothing and returns False (caller re-renders with show_manual)."""
 ```
 
-Call site: `scheduling/scheduler.py:DueTurnsProcessor`, after `composer.compose` commits and
-before `presenter.post_card`; `DraftCardView` gains `auto_send_at: datetime | None` and
+Call site: `telegram/control_bot/review.py:DraftPresenter.post_card`: `plan_arm` before
+`bot.send_message` (the card shows `planned_due_at` or the reasons), `commit_arm` in the same
+transaction as `update_draft(control_message_id=…)`. If `send_message` raises, nothing is
+armed. A later successful post of the same draft (issue #15) runs both again at that moment.
+`plan_arm` returns `None` for a draft that already has `control_message_id` (never re-armed
+by a re-post). `DraftCardView` gains `auto_send_at: datetime | None` and
 `auto_send_reasons: tuple[str, ...]`.
 
 ## 3. Scheduler step
@@ -53,7 +67,8 @@ before `presenter.post_card`; `DraftCardView` gains `auto_send_at: datetime | No
 def on_auto_sends(self, handler: DraftStepHandler) -> None: ...
 # _step_auto_sends: _draft_step(handler,
 #     Draft.auto_send_due_at <= now, Draft.auto_send_stop.is_(None),
-#     Draft.auto_approved_at.is_(None), Draft.outdated.is_(False))
+#     Draft.auto_approved_at.is_(None), Draft.outdated.is_(False),
+#     Draft.control_message_id.is_not(None))
 # runs after _step_due_turns and before _step_reminders.
 
 class AutoSender:
@@ -131,7 +146,9 @@ transaction.
 async def record(session, *, user_id, work_chat_id, draft_id, decision: DraftDecisionKind,
                  during_auto_send: bool, at: datetime) -> None
 async def chat_rate(session, *, work_chat_id: UUID, since: datetime) -> ChatRate  # unchanged, total
-async def recent_auto_outcomes(session, *, work_chat_id: UUID, limit: int) -> list[bool]  # True = intervened
+async def recent_auto_outcomes(session, *, work_chat_id: UUID, limit: int) -> list[bool]
+    # one per draft with during_auto_send rows, newest first; True = intervened: the draft has an
+    # auto_cancelled, sent_edited, rejected or regenerated row (sent_unchanged and auto_sent are not)
 async def purge_older_than(session, cutoff: datetime) -> int
 
 class AutoSendAdvisor:
@@ -148,6 +165,7 @@ Call sites (after commit): `_approve_and_send`, `on_reject`, `on_regen`, `on_aut
 | Event | Fields |
 |---|---|
 | `auto_send_armed` | `user_id`, `draft_id`, `due_at` |
+| `auto_send_arm_failed` | `user_id`, `draft_id`, `error` |
 | `auto_send_blocked` | `user_id`, `draft_id`, `reasons`, `phase` (`arm`/`fire`) |
 | `auto_send_stopped` | `user_id`, `draft_id`, `reason` |
 | `auto_send_fired` | `user_id`, `draft_id` |

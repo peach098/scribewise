@@ -36,7 +36,13 @@ Ordinary card and keyboard, plus one line:
 `{reasons}` joins `autosend.reason.<code>` labels with ", ": `hard_stop` (suspicious
 message), `commitment` (new promise), `sensitive`, `placeholders` (needs details),
 `dates_differ`, `conflict`, `weak_style`, `out_of_office`, `warning` (warning on the draft),
-`outdated` (new messages), `outside_hours`, `paused`, `send_failed`.
+`outdated` (new messages), `possibly_unnecessary` (reply may not be needed),
+`not_first_version` (you're already working on this draft), `outside_hours`, `paused`,
+`send_failed`.
+
+The time in `card.auto_send_at` is when the countdown ends counted from the moment the card
+is posted; the send never happens earlier. A card that could not be posted never gets a
+countdown; if it is posted later (issue #15), the countdown starts then.
 
 ### After sending
 
@@ -72,7 +78,8 @@ existing gendered-text helper.
 | `btn.autosend_offer_later` | `Not now` | `Не сейчас` | `autooffer:<work_chat_id>:later` |
 | `btn.autosend_offer_never` | `Don't offer for this chat` | `Не предлагать для этого чата` | `autooffer:<work_chat_id>:never` |
 
-- `on` → the confirmation in §3, then enabled with `source = offer`.
+- `on` → the confirmation in §3 with `autoconfirm:<work_chat_id>:offer`, then enabled with
+  `source = offer`.
 - `later` → `auto_send_offer_not_before = now + 30 d`; message edited to
   `autosend.offer_later` (`OK, I won't ask about this chat for a month.`).
 - `never` → `auto_send_offer = opted_out`; edited to `autosend.offer_never`.
@@ -84,9 +91,11 @@ existing gendered-text helper.
 |---|---|
 | `autosend.confirm` | `Auto-send for “{chat}”: drafts without warnings will be sent from your account {window} after they appear here, unless you stop them. Drafts with promises, sensitive topics, missing details or suspicious messages always wait for you. Turn it on?` |
 
-Buttons: `autoconfirm:<work_chat_id>:yes` (`Yes, turn on`), `autoconfirm:<work_chat_id>:no`
-(`Cancel`). On yes: `auto_send = true`, activity `auto_send_on`, message edited to
-`autosend.enabled`.
+Buttons: `autoconfirm:<work_chat_id>:manual` or `autoconfirm:<work_chat_id>:offer` (`Yes, turn
+on`; the extra is the source: `manual` from `/chats`, `offer` from §2), and
+`autoconfirm:<work_chat_id>:no` (`Cancel`). On yes: `auto_send = true`, `auto_send_source` from
+the extra, activity `auto_send_on`, message edited to `autosend.enabled`. The help text adds:
+deleting a card in the bot chat does not cancel it; use ⏹.
 
 ## 4. `/chats` per-chat screen
 
