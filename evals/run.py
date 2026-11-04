@@ -41,7 +41,10 @@ flags) and scores the drafts:
   expectation, split by ``rule_direction`` (``strict`` / ``loose``);
 - hard limit kept (specs/013): share of the threads with ``expect.hard_limit`` (a rule that tries
   to lift a limit) that meet every expectation;
-- style judge: mean ``eval.style_judge`` score.
+- style judge: mean ``eval.style_judge`` score;
+- verbosity (info, no threshold; draft and earlier-context threads): draft length against the
+  user's own messages, drafts with a filler phrase or a greeting the user never writes, and
+  placeholders that describe a decision ("[[когда пришлю]]") instead of naming the missing fact.
 
 Jira comment suite (``--suite jira``, specs/003-jira-commitments J14): every case in
 ``evals/threads/jira_*.jsonl`` describes one of the user's Jira comments (and at most one request
@@ -565,6 +568,93 @@ def user_form_misses(text: str, forms: UserForms | None) -> list[str]:
         misses.append(f"none of {forms.must_use}")
     misses += [f"uses {w!r}" for w in forms.must_not_use if _has_word(text, w)]
     return misses
+
+
+# Verbosity (info, never a threshold): padding the user does not write and placeholders that
+# describe a decision instead of naming the missing fact. Lists are small on purpose: a hit is
+# a hint to read the draft, not a verdict.
+_FILLER = (
+    "happy to help",
+    "let me know if",
+    "let me know what works",
+    "i'll keep you posted",
+    "keep you posted",
+    "hope this helps",
+    "feel free to",
+    "don't hesitate",
+    "thanks for reaching out",
+    "thanks for the update",
+    "буду рад помочь",
+    "буду рада помочь",
+    "рад помочь",
+    "рада помочь",
+    "если что — пиши",
+    "если что - пиши",
+    "если что, пиши",
+    "обращайся, если",
+    "дай знать, если",
+    "держу в курсе",
+    "буду держать в курсе",
+)
+_GREETING = re.compile(
+    r"^\s*(?:привет|здравствуй|добрый (?:день|вечер|утро)|доброе утро|hi|hello|hey|dear)\b",
+    re.IGNORECASE,
+)
+# A placeholder should name the fact the user supplies ("[[дата отправки]]", "[[time you're
+# free]]"), not ask a question, offer alternatives or describe the user ("[[когда пришлю]]",
+# "[[пришла ли смета]]", "[[secure channel or method]]", "[[when I'm available]]").
+_DECISION_PLACEHOLDER = re.compile(
+    r"^(?:когда|как|где|что|какой|какая|какое|какие|ли|точно|да|нет|whether|when|how|where|"
+    r"what|which|if|yes|no)\b|\s/\s|(?<!\w)ли(?!\w)|(?<!\w)(?:or|или)(?!\w)|"
+    r"(?<!\w)(?:i'm|i am|i'll|я)(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def verbosity(drafts: Sequence[tuple[str, Sequence[str]]]) -> dict[str, float | int | None]:
+    """Info metrics over ``(draft text, the user's own messages)`` pairs (profile examples and
+    the user's history). ``length_ratio_*``: draft words / median words of the user's messages
+    (only drafts with such messages); a filler phrase or a greeting counts only when none of
+    the user's messages has it."""
+    ratios: list[float] = []
+    filler = greeting = placeholders = decision = 0
+    for text, refs in drafts:
+        lowered = text.lower()
+        own = " ".join(refs).lower()
+        if any(p in lowered and p not in own for p in _FILLER):
+            filler += 1
+        if refs and _GREETING.search(text) and not any(_GREETING.search(r) for r in refs):
+            greeting += 1
+        if refs:
+            ref_words = sorted(len(r.split()) for r in refs)
+            median = ref_words[len(ref_words) // 2]
+            ratios.append(len(text.split()) / max(1, median))
+        for marker in _PLACEHOLDER.findall(text):
+            placeholders += 1
+            decision += bool(_DECISION_PLACEHOLDER.search(marker[2:-2].strip()))
+    ratios.sort()
+    return {
+        "drafts": len(drafts),
+        "length_ratio_mean": sum(ratios) / len(ratios) if ratios else None,
+        "length_ratio_median": ratios[len(ratios) // 2] if ratios else None,
+        "over_2x_length": sum(r > 2 for r in ratios),
+        "filler_drafts": filler,
+        "greeting_added": greeting,
+        "placeholders": placeholders,
+        "decision_placeholders": decision,
+    }
+
+
+def user_messages(thread: Thread | EarlierThread) -> list[str]:
+    """What the user wrote: the profile examples (draft threads) and the user's history."""
+    examples = thread.profile.examples if isinstance(thread, Thread) else []
+    return [*examples, *(h.text for h in thread.history if h.is_user and not h.forwarded)]
+
+
+def print_verbosity(stats: Mapping[str, float | int | None]) -> None:
+    print("\n  verbosity (info)")
+    for key, value in stats.items():
+        print(f"  {key:<24} {value if isinstance(value, int) else _fmt(value)}")
 
 
 @dataclass
@@ -2186,6 +2276,7 @@ class RunRow:
     earlier_threads: list[EarlierResult] = field(default_factory=list)
     # Per suite ("drafts", "jira", "earlier_context"): CostLedger.as_dict().
     costs: dict[str, dict[str, dict[str, float | int]]] = field(default_factory=dict)
+    verbosity: dict[str, float | int | None] | None = None  # info: drafts + earlier context
 
     def as_dict(self) -> dict[str, Any]:
         data = self.metrics.as_dict() if self.metrics is not None else {}
@@ -2201,6 +2292,8 @@ class RunRow:
             data[f"{EARLIER_SUITE}_threads"] = [r.as_dict() for r in self.earlier_threads]
         if self.costs:
             data["cost_by_route"] = self.costs
+        if self.verbosity is not None:
+            data["verbosity"] = self.verbosity
         return data
 
 
@@ -2414,6 +2507,12 @@ async def main_async(args: argparse.Namespace, environ: Mapping[str, str]) -> in
             row.misses += earlier_threshold_misses(row.earlier, thresholds)
             print_earlier_report(label + suffix, earlier_results, row.earlier, earlier_ledger)
             row.costs[EARLIER_SUITE] = earlier_ledger.as_dict()
+        if row.threads or row.earlier_threads:
+            own = {t.id: user_messages(t) for _, t in [*threads, *earlier]}
+            row.verbosity = verbosity(
+                [(r.text, own[r.thread_id]) for r in [*row.threads, *row.earlier_threads]]
+            )
+            print_verbosity(row.verbosity)
         rows.append(row)
 
     if args.json is not None:

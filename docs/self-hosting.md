@@ -202,7 +202,7 @@ OPENAI_BASE_URL=https://my-llm.example.com/v1
 
 [`config/llm_routes.deepseek.yml`](../config/llm_routes.deepseek.yml) is a complete, ready
 table for DeepSeek's API (it is also the table of the evaluation set): `deepseek-flash` for
-filtering, classification and extraction, `deepseek-v4-pro` for drafts and style profiles. It
+filtering, classification, extraction and drafts, `deepseek-v4-pro` for style profiles. It
 is the cheapest hosted option, but
 read DeepSeek's [privacy policy](https://cdn.deepseek.com/policies/en-US/deepseek-privacy-policy.html)
 first: data is stored in the People's Republic of China, and user input may be used for

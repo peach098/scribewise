@@ -12,7 +12,7 @@
 # CI sets it because the evaluation threads are synthetic.
 #
 # Models (api-docs.deepseek.com/quick_start/pricing, checked 2026-10-31): deepseek-flash
-# (cheap, for filtering, classification and extraction) and deepseek-v4-pro (drafts and style
+# (cheap: filtering, classification, extraction and drafts) and deepseek-v4-pro (style
 # profiles). Both have a 1M-token context and up to 384K output tokens; thinking is on by
 # default and max_tokens counts the reasoning too. With reasoning_effort: true each route's
 # effort is sent as reasoning_effort (DeepSeek knows low / high / max and treats medium as
@@ -21,6 +21,12 @@
 # 2026-10-31). DeepSeek accepts response_format json_object but not json_schema, so the schema
 # goes into the prompt (native_json_schema: false, scribe.llm.schema_fallback). Prompt caching
 # is automatic and needs no flag; DeepSeek has no batch API, so profile.build runs as one call.
+#
+# Drafts moved from v4-pro to flash (issue #8) after three evaluation runs of each
+# (2026-11-04): flash at low held every threshold in all three, v4-pro missed some in two of
+# three, and a flash draft costs about a seventh. Both compose tiers are flash now; economy
+# stays a separate entry so a deployment can point it at something cheaper. Flash with thinking off failed
+# tone, conflicts and grounding in the same comparison, so drafts keep effort low.
 #
 # Thinking per route (issue #68, measured on the evaluation set): off for the reply gate and
 # the filter (which also ranks the earlier-conversation matches), whose short structured
@@ -37,7 +43,7 @@ routes:
   extract.deadlines:       {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 4000}
   compose.draft:
     tiers:
-      quality:             {provider: openai_compat, model: deepseek-v4-pro, effort: low,    max_tokens: 16000}
+      quality:             {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 16000}
       economy:             {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 16000}
   profile.build:           {provider: openai_compat, model: deepseek-v4-pro, effort: high,   max_tokens: 64000}
   eval.style_judge:        {provider: openai_compat, model: deepseek-flash,  effort: low,    max_tokens: 8000}
