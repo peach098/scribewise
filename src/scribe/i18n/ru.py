@@ -1025,6 +1025,11 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     ),
     "my_data.activity": "🧾 Записи о действиях: {n} ({details})",
     "my_data.activity_rule": "хранятся, пока вы не удалите свои данные",
+    "my_data.decisions": "📊 Решения по черновикам: {n} ({details})",
+    "my_data.decisions_rule": (
+        "что вы сделали с каждым черновиком, без текста; каждое удаляется через 31 день "
+        "после решения"
+    ),
     "my_data.chats": "👥 Контакты: {contacts} · 💼 Рабочие чаты: {work_chats}",
     "my_data.connections": "🔌 Сеанс Telegram: {telegram} · 🗂 Таск-трекер: {tasks}",
     "my_data.not_connected": "не подключён",

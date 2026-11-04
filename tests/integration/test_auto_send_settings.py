@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 from aiogram.methods import AnswerCallbackQuery
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.chats import work_account
@@ -21,12 +21,15 @@ from scribe.db.models import (
     AutoSendStop,
     Contact,
     Draft,
+    DraftDecision,
     User,
     UserState,
     WorkChat,
 )
 from scribe.llm.adapters.fake import FakeAdapter
 from scribe.llm.registry import LLMRouter
+from scribe.retention.purge import purge_messages
+from scribe.retention.user_data import data_summary, delete_user_data, export_user_data
 from scribe.telegram.control_bot import settings as settings_module
 from scribe.telegram.fake_gateway import FakeMessagingGateway
 from tests.conftest import FrozenClock, MakeChat, MakeContact, MakeUser
@@ -463,3 +466,64 @@ async def test_us3_nothing_in_settings_or_chats_turns_auto_send_on_for_several_c
     async with harness.session_factory() as session:
         on = (await session.scalars(select(WorkChat).where(WorkChat.auto_send.is_(True)))).all()
     assert on == []
+
+
+# --- retention and the user's data (Principle II, quickstart Q10) ---------------------------------
+
+
+async def test_us3_my_data_exports_the_decisions_and_the_new_columns_without_text(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, chat, contact = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await arm_chat(harness, chat)
+    await seed_decisions(harness, user, chat, unchanged=2, edited=1)
+    async with harness.session_factory() as session:
+        export = await export_user_data(session, user.id, now=harness.clock())
+        summary = await data_summary(
+            session, user.id, message_retention_days=30, now=harness.clock()
+        )
+    rows = export["draft_decisions"]
+    assert sorted(r["decision"] for r in rows) == [
+        "sent_edited",
+        "sent_unchanged",
+        "sent_unchanged",
+    ]
+    assert all(set(r) >= {"work_chat_id", "draft_id", "during_auto_send", "at"} for r in rows)
+    assert not [key for r in rows for key in r if "text" in key]
+    (exported_chat,) = export["work_chats"]
+    assert exported_chat["auto_send"] is True and exported_chat["auto_send_source"] == "manual"
+    assert exported_chat["auto_send_offer"] == "none"
+    assert export["users"][0]["auto_send_window_s"] == 120
+    assert summary.decisions.count == 3
+    assert summary.decisions.next_removal == harness.clock() + timedelta(days=31)
+    assert contact.id is not None
+
+
+async def test_us3_deleting_my_data_leaves_no_decisions(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, chat, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await seed_decisions(harness, user, chat, unchanged=2)
+    async with harness.session_factory() as session:
+        await delete_user_data(session, user.id)
+        await session.commit()
+    async with harness.session_factory() as session:
+        assert await session.scalar(select(func.count()).select_from(DraftDecision)) == 0
+
+
+async def test_us3_purge_removes_decisions_after_31_days_and_keeps_newer_ones(
+    harness: US2Harness,
+    settings: Settings,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    now = harness.clock()
+    await seed_decisions(harness, user, chat, unchanged=1, at=now - timedelta(days=32))
+    await seed_decisions(harness, user, chat, edited=1, at=now - timedelta(days=29))
+    stats = await purge_messages(harness.session_factory, settings, now)
+    assert stats.decisions_deleted == 1
+    async with harness.session_factory() as session:
+        left = (await session.scalars(select(DraftDecision.decision))).all()
+    assert [kind.value for kind in left] == ["sent_edited"]

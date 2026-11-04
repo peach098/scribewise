@@ -916,6 +916,10 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     ),
     "my_data.activity": "🧾 Activity records: {n} ({details})",
     "my_data.activity_rule": "kept until you delete your data",
+    "my_data.decisions": "📊 Draft decisions: {n} ({details})",
+    "my_data.decisions_rule": (
+        "what you did with each draft, with no text; each is deleted 31 days after the decision"
+    ),
     "my_data.chats": "👥 Contacts: {contacts} · 💼 Work chats: {work_chats}",
     "my_data.connections": "🔌 Telegram session: {telegram} · 🗂 Task source: {tasks}",
     "my_data.not_connected": "not connected",

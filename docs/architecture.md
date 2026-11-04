@@ -55,9 +55,22 @@ flowchart LR
    like instructions to the assistant are flagged (`drafting/injection.py`).
 5. **Review** (`telegram/control_bot/review.py`). The draft card goes to the user's control
    chat with **Send / Edit / Regenerate / Reject**, its sources and its flags. Unanswered
-   cards get one reminder and then expire.
-6. **Sending** (`sending/send.py`). Only after the user approves, the reply is sent from their
-   own account. The chat is marked unread again so the user still sees it in their list.
+   cards get one reminder and then expire. In a chat the user turned auto-send on for, an
+   eligible draft also gets a countdown, armed only after the card was posted, in the same
+   transaction that stores its message id (`sending/auto_send.py`: `plan_arm`, `commit_arm`);
+   the card shows the time and **⏹ Don't send automatically**.
+6. **Auto-send** (`sending/auto_send.py`, scheduler step `on_auto_sends`). When a countdown
+   ends, `AutoSender` locks the draft and checks eligibility again (`eligibility()`: no
+   promise, sensitive topic, placeholder, injection stop, conflict or warning; chat on; inside
+   working hours; not paused or out of office). Eligible drafts get `drafts.auto_approved_at`,
+   which is never the user's `approved_by_user_at`, and go through the same send path as a
+   tap; the others stop and their card says why. A tap and the countdown lock the same row, so
+   exactly one of them wins. The user's decisions are kept as `draft_decisions` rows, which
+   feed the per-chat offer to turn auto-send on and the suggestion to turn it off
+   (`AutoSendAdvisor`).
+7. **Sending** (`sending/send.py`). Only after the user approves, or after the cancel window of
+   a chat the user opted in to, the reply is sent from their own account. The chat is marked
+   unread again so the user still sees it in their list.
 
 ## Packages
 
@@ -66,7 +79,8 @@ flowchart LR
 | `telegram/` | Telethon user clients (`client_pool.py`, `user_client.py`), QR and phone login (`login.py`), the gateway interface and its fake for tests |
 | `telegram/control_bot/` | The aiogram bot: setup flow, commands, draft cards, settings |
 | `intake/` | Which incoming messages are stored and how they group into turns |
-| `scheduling/` | The Postgres-polling scheduler, working hours, review deadlines |
+| `scheduling/` | The Postgres-polling scheduler, working hours, review deadlines, the auto-send step |
+| `sending/` | Sending an approved draft (`send.py`) and opt-in auto-send: eligibility, countdown, offer (`auto_send.py`) |
 | `drafting/` | Reply gate, composer, placeholders, injection and promise checks, the daily LLM budget per user (`budget.py`) |
 | `context/` | History, earlier-conversation search, commitments, task sources (`tasks/jira`, `tasks/trello`) |
 | `style/` | Style profiles: import of the user's own messages, building, weekly refresh, rule proposals |

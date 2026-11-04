@@ -74,8 +74,10 @@ from scribe.db.models import (
     WorkChat,
     WorkChatOrigin,
 )
+from scribe.db.repos import decisions as decisions_repo
 from scribe.drafting.stored_output import CONTENT_KEYS
 from scribe.logging import get_logger
+from scribe.retention.user_data import DECISION_RETENTION
 from scribe.scheduling.scheduler import Daily, Scheduler
 from scribe.style.profiles import last_undoable_refresh
 
@@ -114,6 +116,7 @@ class PurgeStats:
     chats_deleted: int = 0
     contacts_deleted: int = 0
     llm_spend_deleted: int = 0
+    decisions_deleted: int = 0
 
 
 def _rowcount(result: object) -> int:
@@ -178,6 +181,7 @@ async def purge_messages(
                 LLMSpend.day < (now - timedelta(days=settings.llm_spend_retention_days)).date()
             )
         )
+        decisions = await decisions_repo.purge_older_than(session, now - DECISION_RETENTION)
         applications = await session.execute(
             delete(BetaApplication).where(BetaApplication.decided_at < now - APPLICATION_RETENTION)
         )
@@ -207,6 +211,7 @@ async def purge_messages(
         chats_deleted=_rowcount(chats),
         contacts_deleted=_rowcount(contacts),
         llm_spend_deleted=_rowcount(spend),
+        decisions_deleted=decisions,
     )
     log.info("retention_purge", **asdict(stats))
     return stats

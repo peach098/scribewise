@@ -43,6 +43,7 @@ from tests.integration.us2_support import (
     arm_chat,
     callback_datas,
     decision_rows,
+    seed_decisions,
 )
 from tests.integration.us4_support import add_profile
 
@@ -827,3 +828,44 @@ async def test_database_refuses_a_sent_draft_without_any_approval(
             )
             await session.flush()
         await session.rollback()
+
+
+# --- logs (Principle II) --------------------------------------------------------------------------
+
+
+async def test_auto_send_logs_carry_ids_codes_and_counts_never_text(
+    harness: US2Harness,
+    log_capture: LogCapture,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    """Armed, stopped by the user, fired, blocked, offered and warned: every auto-send event holds
+    scalars only, and no draft or message text appears anywhere in the log."""
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    await _press(harness, user, f"autostop:{draft.id}")  # auto_send_stopped
+    await _press(harness, user, f"reject:{draft.id}")
+    await harness.incoming(user, chat, contact, "Synthetic second question about the budget")
+    await harness.tick()
+    await _run_window(harness, clock)  # auto_send_fired, sent (auto)
+    assert len(harness.gateway.send_text_calls) == 1
+
+    # The offer and the suggestion, from synthetic figures.
+    await _set(harness, "UPDATE work_chats SET auto_send = false")
+    await seed_decisions(harness, user, chat, unchanged=20)
+    await harness.advisor.after_decision(user.id, chat.id)
+    await _set(harness, "UPDATE work_chats SET auto_send = true, auto_send_offer = 'none'")
+
+    names = {"auto_send_armed", "auto_send_stopped", "auto_send_fired", "auto_send_offered"}
+    events = [e for e in log_capture.events() if str(e.get("event", "")).startswith("auto_send")]
+    sent = [e for e in log_capture.events("sent") if "auto" in e]
+    assert names <= {e["event"] for e in events}
+    assert sent and sent[0]["auto"] is True
+    for event in [*events, *sent]:
+        for key, value in event.items():
+            assert isinstance(value, str | int | float | bool | list | None), key
+            if isinstance(value, list):
+                assert all(isinstance(v, str | int) for v in value), key
+    for text_fragment in (REPLY, "Synthetic question", "Synthetic second question"):
+        assert text_fragment not in log_capture.raw

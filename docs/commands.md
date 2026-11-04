@@ -7,8 +7,8 @@ Send these in your bot chat. The same list is in the bot's menu and in `/help`.
 | Command | What it does |
 | --- | --- |
 | `/start` | Set up: connect Telegram (QR code or phone), pick work chats or turn on work account mode, set your time zone, learn your style |
-| `/chats` | Your work chats: **➕ Add work chats**, turn a chat on or off, per-chat language and reading delay, exclusions in work account mode |
-| `/settings` | Reading delay, working hours and days, time zone, bot language; switches for search over earlier conversations, unread marks, work account mode and the grammatical gender in drafts |
+| `/chats` | Your work chats: **➕ Add work chats**, turn a chat on or off, per-chat language and reading delay, per-chat **⏱ auto-send** (on after a confirmation, off in one tap, with the share of drafts sent unchanged), exclusions in work account mode |
+| `/settings` | Reading delay, working hours and days, time zone, bot language; switches for search over earlier conversations, unread marks, work account mode and the grammatical gender in drafts; auto-send: the **⏱ Cancel window** (1, 2, 5, 10 or 15 minutes), the **chats with auto-send** and **⏹ Turn off auto-send everywhere** |
 | `/profile` | Your style profile and its rules: edit rules, per-contact profiles (up to 20), pin, rebuild, undo the last weekly refresh |
 | `/commitments` | Promises found in your chats and Jira comments: resolve, delete, reopen |
 | `/waiting` | Messages still waiting to be read, with **👀 Read now** |
@@ -36,6 +36,31 @@ Every draft comes as a card with:
 - **🧾 Sources**: the tasks, promises and earlier messages the draft relies on.
 
 A draft flagged for possible prompt injection needs one more confirmation before it is sent.
+
+### Auto-send
+
+Auto-send is off everywhere until you turn it on for one chat (`/chats` → the chat → **⏱ Turn on
+auto-send**, then confirm). In that chat a draft that is eligible is sent from your account when
+its cancel window ends (2 minutes by default; `/settings` → **⏱ Cancel window**). Its card shows
+**⏱ Will be sent automatically at HH:MM** and:
+
+- **✅ Send now** sends it at once.
+- **⏹ Don't send automatically** cancels the countdown and keeps the draft for you.
+- Edit, Regenerate and Reject also cancel the countdown first. If the draft is already being
+  sent, the button answers "Already being sent automatically".
+
+Drafts with a new promise, a sensitive topic, missing details, a suspicious message, a date that
+differs from the task, a conflict, a weak style profile, a warning or a pause, or outside your
+working hours, always wait for your tap; the card says **✋ Needs your approval** and why. Deleting
+a card in the bot chat does not cancel its countdown; use ⏹.
+
+When you send at least 20 of a chat's drafts in 30 days and more than 60% of them unchanged,
+Scribe offers to turn auto-send on for that chat (at most one offer a day; **Not now** waits a
+month, **Don't offer for this chat** stops it, and the chat screen can offer it again). If you
+stop or change more than 4 of the last 10 automatic drafts, Scribe suggests turning it off (at
+most once a week). Turning it off for a chat, or everywhere, stops running countdowns at once.
+Disabling or excluding a chat turns its auto-send off too, and enabling it again does not turn it
+back on.
 
 ## Operator commands
 

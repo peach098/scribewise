@@ -157,6 +157,7 @@ def summary_text(summary: DataSummary, tz: str, retention_days: int, lang: str =
         t("my_data.proposals", lang, n=summary.proposals),
         commitments,
         _line("my_data.activity", summary.activity, tz, t("my_data.activity_rule", lang), lang),
+        _line("my_data.decisions", summary.decisions, tz, t("my_data.decisions_rule", lang), lang),
         t("my_data.release_notes", lang, n=summary.release_notes),
         t("settings.gender", lang, value=gender_label(summary.grammatical_gender, lang)),
         t("my_data.chats", lang, contacts=summary.contacts, work_chats=summary.work_chats),

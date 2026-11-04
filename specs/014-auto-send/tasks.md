@@ -130,11 +130,11 @@ window, get a suggestion to turn it off when interventions pile up.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T034 [P] In `src/scribe/retention/user_data.py` add `DraftDecision` to `PER_USER_TABLES` and to `data_summary`; in `src/scribe/retention/purge.py` call `decisions.purge_older_than(now - 31 days)` inside `purge_messages` and add the count to its stats; tests in `tests/integration/test_auto_send_settings.py`: `/my_data` export contains the decision rows and new columns and no message text; `/delete_my_data` leaves no `draft_decisions` rows; purge removes a 32-day-old row and keeps a 29-day-old one (quickstart Q10)
-- [ ] T035 [P] Log redaction test in `tests/unit/test_logging_redaction.py` (or `tests/integration/test_auto_send_flow.py` with `log_capture`): every `auto_send_*` event and `sent` with `auto` carries ids, codes and counts only, never the draft text (Principle II)
-- [ ] T036 [P] Update `README.md` and `README.ru.md` ("You stay in control": replace "Nothing is sent without your approval" with wording that names the opt-in per-chat auto-send with a cancel window and the drafts that always wait), `docs/commands.md` (`/chats` auto-send controls, `/settings` window and off-everywhere), `docs/privacy.md` (`draft_decisions`, 31-day retention), `docs/architecture.md` (auto-send step in the scheduler, `auto_approved_at`)
-- [ ] T037 [P] Add a release-notes entry for auto-send in `release-notes/` following the existing format there
-- [ ] T038 Run `make lint typecheck`, `uv run pytest`, and quickstart Q1–Q11 on a test account (including Q1 in a group chat, plan Risks); record results in the PR description
+- [X] T034 [P] In `src/scribe/retention/user_data.py` add `DraftDecision` to `PER_USER_TABLES` and to `data_summary`; in `src/scribe/retention/purge.py` call `decisions.purge_older_than(now - 31 days)` inside `purge_messages` and add the count to its stats; tests in `tests/integration/test_auto_send_settings.py`: `/my_data` export contains the decision rows and new columns and no message text; `/delete_my_data` leaves no `draft_decisions` rows; purge removes a 32-day-old row and keeps a 29-day-old one (quickstart Q10)
+- [X] T035 [P] Log redaction test in `tests/unit/test_logging_redaction.py` (or `tests/integration/test_auto_send_flow.py` with `log_capture`): every `auto_send_*` event and `sent` with `auto` carries ids, codes and counts only, never the draft text (Principle II)
+- [X] T036 [P] Update `README.md` and `README.ru.md` ("You stay in control": replace "Nothing is sent without your approval" with wording that names the opt-in per-chat auto-send with a cancel window and the drafts that always wait), `docs/commands.md` (`/chats` auto-send controls, `/settings` window and off-everywhere), `docs/privacy.md` (`draft_decisions`, 31-day retention), `docs/architecture.md` (auto-send step in the scheduler, `auto_approved_at`)
+- [X] T037 [P] Add a release-notes entry for auto-send in `release-notes/` following the existing format there
+- [X] T038 (automated part only: lint, typecheck and the full suite; quickstart Q1–Q11 on a real Telegram account NOT run, still to do by hand) Run `make lint typecheck`, `uv run pytest`, and quickstart Q1–Q11 on a test account (including Q1 in a group chat, plan Risks); record results in the PR description
 
 ---
 
