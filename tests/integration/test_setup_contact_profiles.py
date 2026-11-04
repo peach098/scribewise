@@ -182,3 +182,41 @@ async def test_setup_keeps_global_profile_when_contact_builds_fail(
     )
     async with session_factory() as session:
         assert await chats_repo.list_contacts(session, user.id)  # counts were still stored
+
+
+async def test_setup_reports_contact_profiles_when_global_build_fails(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    llm_router: LLMRouter,
+    fake_llm: FakeAdapter,
+    gateway: FakeMessagingGateway,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+) -> None:
+    user = await make_user(state=UserState.setting_up)
+    await _chats_with_history(user, make_chat, gateway, clock, [15, 20])
+
+    def respond(call: FakeCall) -> StyleProfileOutput:
+        if scope_of(call) == "global":
+            raise ProviderOutputInvalid("broken", truncated=False)
+        return style_output("Own.")
+
+    fake_llm.set_response("profile.build", respond)
+
+    note = await _run_setup(user, session_factory, settings, llm_router, gateway, clock)
+
+    assert note.startswith(t("setup.learn_failed"))
+    assert t("setup.contacts", n=2) in note
+    # The neutral default stands in for the failed global build; the contacts keep theirs.
+    assert await profiles_of(
+        session_factory, user, state=ProfileState.current, scope=ProfileScope.global_
+    )
+    assert (
+        len(
+            await profiles_of(
+                session_factory, user, state=ProfileState.current, scope=ProfileScope.contact
+            )
+        )
+        == 2
+    )

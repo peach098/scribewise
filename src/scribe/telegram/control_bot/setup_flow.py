@@ -366,11 +366,12 @@ async def _build_profiles_note(
             )
         if existing is None:
             await build_global_profile(session_factory, llm_router, user.id, [], settings=settings)
-        return t("setup.learn_failed", lang)
-    note = t("setup.learned", lang, n=profile.sample_size)
+        note = t("setup.learn_failed", lang)
+    else:
+        note = t("setup.learned", lang, n=profile.sample_size)
     if summary is not None and summary.contact_profiles:
         note += " " + t("setup.contacts", lang, n=summary.contact_profiles)
-    if profile.rules_json.get("weak"):
+    if profile is not None and profile.rules_json.get("weak"):
         note += " " + t("setup.weak", lang, n=settings.min_style_samples)
     if summary is not None and summary.contact_failures:
         note += "\n" + t("setup.contacts_failed", lang, n=summary.contact_failures)
