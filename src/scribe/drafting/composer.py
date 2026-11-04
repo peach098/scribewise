@@ -249,6 +249,9 @@ class ComposeInput:
     history: list[HistoryItem]
     contact: ContactInfo
     profile: ProfileContext
+    # Specs/013: the user's own rules (``AppliedRules.user_rules_json()``), sent as their own
+    # block, not inside the profile.
+    user_rules: dict[str, Any] = field(default_factory=dict)
     tier: Tier = "quality"
     chat_overrides: ChatOverrides = field(default_factory=ChatOverrides)
     tasks: list[TaskItem] = field(default_factory=list)
@@ -633,6 +636,7 @@ async def compose_output(
         history=[*history, *step.items],
         contact=inp.contact,
         profile=inp.profile,
+        user_rules=inp.user_rules,
         user=inp.user,
         chat_overrides=inp.chat_overrides,
         tasks=tasks,
@@ -994,7 +998,8 @@ class Composer:
             incoming=candidates.incoming,
             history=candidates.history,
             contact=ContactInfo(display_name=contact.display_name, kind=contact.kind.value),
-            profile=profile_context(profile, user_rules),
+            profile=profile_context(profile),
+            user_rules=user_rules.user_rules_json(),
             tier=tier,
             chat_overrides=ChatOverrides(
                 language=chat.override_language, formality=chat.override_formality

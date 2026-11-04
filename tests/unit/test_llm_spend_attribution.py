@@ -158,7 +158,11 @@ async def test_every_route_passes_the_user(prompts_dir: Path) -> None:
     fake.set_response(
         "classify.reply_needed",
         ReplyNeededOutput(
-            reply_needed=False, category="thanks", confidence=0.9, resolves_pending=False
+            reply_needed=False,
+            category="thanks",
+            confidence=0.9,
+            resolves_pending=False,
+            decided_by="default",
         ),
     )
     fake.set_response("profile.build", _profile_output())

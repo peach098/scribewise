@@ -1,5 +1,5 @@
 """ReplyNeededOutput (pydantic) must stay equivalent to
-specs/004-skip-closing-messages/contracts/reply-needed-output.schema.json (004 T009)."""
+specs/013-noncommittal-replies/contracts/reply-needed-output.schema.json (004 T009, 013 T011)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from scribe.llm.provider import ReplyNeededOutput
 
 SCHEMA_PATH = (
     Path(__file__).resolve().parents[2]
-    / "specs/004-skip-closing-messages/contracts/reply-needed-output.schema.json"
+    / "specs/013-noncommittal-replies/contracts/reply-needed-output.schema.json"
 )
 
 
@@ -44,6 +44,7 @@ def _payload() -> dict[str, Any]:
         "category": "thanks",
         "confidence": 0.9,
         "resolves_pending": False,
+        "decided_by": "default",
     }
 
 
@@ -51,10 +52,19 @@ def test_valid_payload_parses() -> None:
     assert ReplyNeededOutput.model_validate(_payload()).category == "thanks"
 
 
+def test_informational_and_rule_decisions_parse() -> None:
+    output = ReplyNeededOutput.model_validate(
+        {**_payload(), "category": "informational", "decided_by": "user_rule"}
+    )
+    assert (output.category, output.decided_by) == ("informational", "user_rule")
+
+
 @pytest.mark.parametrize(
     "mutate",
     [
         lambda p: p.pop("resolves_pending"),
+        lambda p: p.pop("decided_by"),
+        lambda p: p.update(decided_by="model"),
         lambda p: p.update(extra_field=1),
         lambda p: p.update(category="greeting"),
         lambda p: p.update(confidence=1.2),

@@ -164,6 +164,7 @@ def test_draft_blocks_order() -> None:
     names = [b.name for b in _draft_turn(50, [44]).to_blocks()]
     assert names == [
         "profile",
+        "user_rules",
         "user",
         "contact",
         "chat_overrides",

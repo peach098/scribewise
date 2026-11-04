@@ -246,7 +246,11 @@ async def test_extract_commitments_returns_items(
 
 async def test_classify_reply_needed_routed(llm_router: LLMRouter, fake_llm: FakeAdapter) -> None:
     output = ReplyNeededOutput(
-        reply_needed=False, category="thanks", confidence=0.93, resolves_pending=False
+        reply_needed=False,
+        category="thanks",
+        confidence=0.93,
+        resolves_pending=False,
+        decided_by="default",
     )
     fake_llm.set_response("classify.reply_needed", output)
     request = ReplyNeededRequest(
@@ -263,6 +267,7 @@ async def test_classify_reply_needed_routed(llm_router: LLMRouter, fake_llm: Fak
     (call,) = fake_llm.calls_for("classify.reply_needed")
     assert call.effort == "low" and call.cache_prefix is False
     assert [b.name for b in call.user_blocks] == [
+        "user_rules",  # specs/013: the user's own rules ({} when none)
         "incoming_messages",
         "history",
         "contact",
@@ -607,7 +612,11 @@ async def test_effort_none_reaches_the_adapter_and_the_log(
     fake.set_response(
         "classify.reply_needed",
         ReplyNeededOutput(
-            reply_needed=True, category="none", confidence=0.9, resolves_pending=False
+            reply_needed=True,
+            category="none",
+            confidence=0.9,
+            resolves_pending=False,
+            decided_by="default",
         ),
     )
     await router.classify_reply_needed(

@@ -470,7 +470,17 @@ def disconnect_confirm_keyboard(lang: str) -> InlineKeyboardMarkup:
 
 SKIPPED_PAGE_SIZE = 10
 SKIPPED_PREVIEW_CHARS = 80
-SKIP_CATEGORIES = frozenset({"thanks", "farewell", "acknowledgment", "forwarded", "budget"})
+SKIP_CATEGORIES = frozenset(
+    {
+        "thanks",
+        "farewell",
+        "acknowledgment",
+        "informational",
+        "user_rule",
+        "forwarded",
+        "budget",
+    }
+)
 # Skipped whatever the chat's skip setting: no per-chat switch on their rows.
 SETTING_INDEPENDENT_SKIPS = frozenset({"forwarded", "budget"})
 

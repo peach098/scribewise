@@ -211,7 +211,8 @@ def _ttl_order_ok(marks: list[tuple[str, int, dict[str, Any]]]) -> bool:
 
 async def test_draft_request_caches_shared_system_and_per_user_profile_for_one_hour() -> None:
     """Issue #69: the system prompt (same for every user) and the profile prefix (per user)
-    each get a 1-hour breakpoint, system first; the volatile blocks carry none."""
+    each get a 1-hour breakpoint, system first; the volatile blocks carry none. The user's
+    rules (specs/013) are a stable block right after the profile, inside the cached prefix."""
     request = DraftRequest(
         incoming_messages=[MessageItem(id="msg:1", sender="Colleague", text="Synthetic?")],
         contact=ContactInfo(display_name="Colleague", kind="person"),
@@ -222,11 +223,12 @@ async def test_draft_request_caches_shared_system_and_per_user_profile_for_one_h
     (params,) = client.beta.messages.calls
 
     marks = _cache_marks(params)
-    assert marks == [("system", 0, ONE_HOUR), ("user", 0, ONE_HOUR)]
+    assert marks == [("system", 0, ONE_HOUR), ("user", 1, ONE_HOUR)]
     assert len(marks) <= MAX_CACHE_BREAKPOINTS and _ttl_order_ok(marks)
     content = params["messages"][0]["content"]
     assert content[0]["text"].startswith('<data name="profile"')
-    assert len(content) > 1  # the volatile blocks follow the last breakpoint
+    assert content[1]["text"].startswith('<data name="user_rules" trust="user"')
+    assert len(content) > 2  # the volatile blocks follow the last breakpoint
 
 
 async def test_filter_request_caches_its_shared_system_prompt_for_one_hour() -> None:

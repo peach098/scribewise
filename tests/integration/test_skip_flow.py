@@ -155,7 +155,13 @@ async def test_thanks_is_read_and_skipped(
     assert harness.api.requests == [] and harness.notifications == []
     (record,) = await _activity(harness, user, ActivityKind.skipped)
     assert record.conversation_turn_id == turn.id
-    assert record.meta_json == {"category": "thanks", "source": "model", "confidence": 0.95}
+    assert record.meta_json == {
+        "category": "thanks",
+        "source": "model",
+        "confidence": 0.95,
+        "decided_by": "default",
+        "has_rules": False,
+    }
 
     # A skipped turn is a resting state: later ticks leave it alone.
     clock.advance(hours=30)

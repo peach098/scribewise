@@ -239,11 +239,11 @@ async def habit_replied_count(
     reply_window: timedelta,
     retention_days: int,
 ) -> int:
-    """Research R3: of the last ``window`` closing turns in the chat (``skip_category`` set and
-    not ``forwarded``, inside the retention window, arrived before ``before``), how many the
-    user answered: by a sent draft, by a manual reply that dropped the turn, or by an outgoing
-    message within ``reply_window`` after the turn's last message and before the next incoming
-    turn."""
+    """Research R3: of the last ``window`` closing turns in the chat (``skip_category`` set, not
+    ``forwarded`` / ``budget`` / ``user_rule`` and not decided by a user rule, inside the
+    retention window, arrived before ``before``), how many the user answered: by a sent draft, by
+    a manual reply that dropped the turn, or by an outgoing message within ``reply_window`` after
+    the turn's last message and before the next incoming turn. ``informational`` turns count."""
     last_message = select(Message.sent_at).where(Message.id == ConversationTurn.last_message_id)
     result = await session.execute(
         select(
@@ -256,8 +256,12 @@ async def habit_replied_count(
             ConversationTurn.user_id == user_id,
             ConversationTurn.work_chat_id == work_chat_id,
             ConversationTurn.skip_category.is_not(None),
-            # Not closings: forwards only (#47), the daily LLM hard cap (#74).
-            ConversationTurn.skip_category.not_in([SkipCategory.forwarded, SkipCategory.budget]),
+            # Not closings: forwards only (#47), the daily LLM hard cap (#74), a user rule's
+            # decision (013: a rule never shapes the learned habit, in either direction).
+            ConversationTurn.skip_category.not_in(
+                [SkipCategory.forwarded, SkipCategory.budget, SkipCategory.user_rule]
+            ),
+            ConversationTurn.decision_source.is_distinct_from(DecisionSource.rule),
             ConversationTurn.arrived_at >= before - timedelta(days=retention_days),
             ConversationTurn.arrived_at < before,
         )

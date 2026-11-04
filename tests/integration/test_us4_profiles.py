@@ -469,7 +469,9 @@ async def test_rule_proposal_after_repeated_edits(
     assert len(rule_texts(await profile(session_factory, user, global_profile.id))) == 1
     await harness.incoming(user, chat, anna, "Synthetic question 7")
     await harness.tick()
-    assert _compose_profile(fake_llm)["user_rules_json"] == stored.user_rules_json
+    assert dict(_block(fake_llm.calls_for("compose.draft")[-1], "user_rules")) == (
+        stored.user_rules_json
+    )
 
 
 # --- weak profile -------------------------------------------------------------------------------

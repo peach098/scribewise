@@ -148,16 +148,13 @@ def is_weak(profile: StyleProfile | None) -> bool:
     return profile is None or bool(profile.rules_json.get("weak", False))
 
 
-def profile_context(profile: StyleProfile | None, rules: AppliedRules) -> ProfileContext:
-    """What the drafting call sees of a profile (the stable, cached prefix); ``rules`` is
-    :func:`effective_user_rules` of that profile."""
+def profile_context(profile: StyleProfile | None) -> ProfileContext:
+    """What the drafting call sees of a profile (the stable, cached prefix). The user's own
+    rules travel in their own block: :meth:`AppliedRules.user_rules_json` of
+    :func:`effective_user_rules` (specs/013)."""
     if profile is None:
         return ProfileContext(rules_json={**NEUTRAL_RULES, "weak": True})
-    return ProfileContext(
-        rules_json=profile.rules_json,
-        user_rules_json=rules.user_rules_json(),
-        examples=list(profile.examples),
-    )
+    return ProfileContext(rules_json=profile.rules_json, examples=list(profile.examples))
 
 
 # --- user rules (FR-023: readable, editable) ----------------------------------------------------

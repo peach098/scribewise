@@ -48,7 +48,7 @@ def test_defaults() -> None:
 
 def test_reply_gate_defaults() -> None:
     s = _settings()
-    assert s.skip_candidate_max_words == 15
+    assert s.skip_candidate_max_chars == 2000
     assert s.skip_min_confidence == 0.8
     assert s.skip_context_messages == 8
     assert (s.skip_habit_window, s.skip_habit_min_replies) == (5, 3)

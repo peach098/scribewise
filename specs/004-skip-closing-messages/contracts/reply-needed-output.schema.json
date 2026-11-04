@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "scribe/reply-needed-output.schema.json",
   "title": "ReplyNeededOutput",
-  "description": "Structured output of the classify.reply_needed route (004 research R2). The system skips a turn only when reply_needed is false and confidence >= skip_min_confidence.",
+  "description": "Structured output of the classify.reply_needed route (004 research R2). The system skips a turn only when reply_needed is false and confidence >= skip_min_confidence. Superseded by specs/013-noncommittal-replies/contracts/reply-needed-output.schema.json (prompt v4: category informational, required decided_by); tests/contract/test_reply_needed_schema.py points there.",
   "type": "object",
   "additionalProperties": false,
   "required": ["reply_needed", "category", "confidence", "resolves_pending"],

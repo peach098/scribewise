@@ -66,8 +66,8 @@ def harness(
 
 def _draft_rules(fake_llm: FakeAdapter) -> list[tuple[str, str | None]]:
     """(text, scope) of the user rules in the newest drafting request."""
-    profile_block = _block(fake_llm.calls_for("compose.draft")[-1], "profile")
-    return [(r["text"], r.get("scope")) for r in profile_block["user_rules_json"]["rules"]]
+    rules_block = _block(fake_llm.calls_for("compose.draft")[-1], "user_rules")
+    return [(r["text"], r.get("scope")) for r in rules_block["rules"]]
 
 
 def _build_rules(call: FakeCall) -> list[tuple[str, str | None]]:

@@ -121,11 +121,20 @@ class Block(BaseModel):
     content: str
     name: str = ""
     stable: bool = False  # part of the cacheable prefix (e.g. the style profile)
+    # "user": the user's own instructions (specs/013); only the ``user_rules`` block may say so.
+    # Everything else is untrusted content written by other people.
+    trust: Literal["untrusted", "user"] = "untrusted"
+
+    @model_validator(mode="after")
+    def _only_user_rules_are_trusted(self) -> Block:
+        if self.trust == "user" and (self.kind != "data" or self.name != USER_RULES_BLOCK):
+            raise ValueError(f"only the {USER_RULES_BLOCK!r} data block can be trust=user")
+        return self
 
     def render(self) -> str:
         if self.kind == "text":
             return self.content
-        return f'<data name="{self.name}" trust="untrusted">\n{self.content}\n</data>'
+        return f'<data name="{self.name}" trust="{self.trust}">\n{self.content}\n</data>'
 
 
 def escape_data(content: str) -> str:
@@ -134,6 +143,9 @@ def escape_data(content: str) -> str:
     nor open a new one, and ``json.loads`` still returns the original text (``<`` and ``>``
     only occur inside JSON strings, where the escape is valid)."""
     return content.replace("<", "\\u003c").replace(">", "\\u003e")
+
+
+USER_RULES_BLOCK = "user_rules"
 
 
 def data_block(
@@ -153,7 +165,13 @@ def data_block(
         content = "{" + ", ".join(parts) + "}"
     else:
         content = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
-    return Block(kind="data", name=name, content=escape_data(content), stable=stable)
+    return Block(
+        kind="data",
+        name=name,
+        content=escape_data(content),
+        stable=stable,
+        trust="user" if name == USER_RULES_BLOCK else "untrusted",
+    )
 
 
 class Usage(BaseModel):
@@ -286,7 +304,11 @@ class _Forwardable(BaseModel):
             data.pop("forwarded_from", None)
         elif self.forwarded_from is None:
             data.pop("forwarded_from", None)
+        self._omit_defaults(data)
         return data
+
+    def _omit_defaults(self, data: dict[str, Any]) -> None:
+        """Hook for subclasses with more keys that are left out at their default."""
 
 
 class MessageItem(_Forwardable):
@@ -295,6 +317,13 @@ class MessageItem(_Forwardable):
     text: str
     # When it was sent, in the user's time zone (ISO 8601 with offset); None in old fixtures.
     sent_at: datetime | None = None
+    # Specs/013: a document, photo or link preview is attached (the reply gate sees only the
+    # text). Left out of the serialized item when false, so other requests read as before.
+    has_media: bool = False
+
+    def _omit_defaults(self, data: dict[str, Any]) -> None:
+        if not self.has_media:
+            data.pop("has_media", None)
 
 
 class HistoryItem(_Forwardable):
@@ -356,6 +385,9 @@ class ContactInfo(BaseModel):
 class ReplyNeededRequest(LLMRequest):
     """Reply gate (004 contracts/reply-gate.md): does this turn need a reply at all?"""
 
+    # Specs/013: the user's own rules for this contact (``AppliedRules.user_rules_json()``);
+    # ``{}`` when there are none. The only block rendered ``trust="user"``.
+    user_rules: dict[str, Any] = Field(default_factory=dict)
     incoming_messages: list[MessageItem]  # the turn (or the single new message while pending)
     history: list[HistoryItem] = Field(default_factory=list)  # last <= skip_context_messages
     contact: ContactInfo
@@ -364,7 +396,6 @@ class ReplyNeededRequest(LLMRequest):
 
 class ProfileContext(BaseModel):
     rules_json: dict[str, Any] = Field(default_factory=dict)
-    user_rules_json: dict[str, Any] = Field(default_factory=dict)
     examples: list[str] = Field(default_factory=list)
 
 
@@ -392,9 +423,12 @@ class DraftRequest(LLMRequest):
     then what holds for the user or the chat, then the turn's selected context, then the date
     anchor, and the incoming messages last."""
 
-    STABLE_FIELDS: ClassVar[frozenset[str]] = frozenset({"profile"})
+    STABLE_FIELDS: ClassVar[frozenset[str]] = frozenset({"profile", USER_RULES_BLOCK})
 
     profile: ProfileContext = Field(default_factory=ProfileContext)
+    # Specs/013: the user's own rules, style and behaviour (``AppliedRules.user_rules_json()``),
+    # a block of their own right after the profile (``trust="user"``, same cached prefix).
+    user_rules: dict[str, Any] = Field(default_factory=dict)
     # Outside ``profile`` (issue #46): the same for the global and every contact profile.
     user: UserContext = Field(default_factory=UserContext)
     contact: ContactInfo
@@ -651,14 +685,15 @@ class ReplyNeededOutput(_Output):
     reply_needed: bool = Field(
         description=(
             "True when the user would normally answer: any question, request, new information"
-            " calling for a response, disagreement, complaint, or a greeting that opens a"
-            " conversation."
+            " calling for a response, disagreement, complaint, a greeting that opens a"
+            " conversation, or a user rule that asks to draft this turn."
         )
     )
-    category: Literal["thanks", "farewell", "acknowledgment", "none"] = Field(
+    category: Literal["thanks", "farewell", "acknowledgment", "informational", "none"] = Field(
         description=(
-            "What the turn mainly is when it only closes the exchange; 'none' when it does"
-            " something else."
+            "What the turn mainly is when it needs no reply: a closing, or 'informational' when"
+            " it only shares news, a status, an announcement, a document, a link or reference"
+            " data and asks nothing; 'none' when it does something else."
         )
     )
     confidence: float = Field(ge=0, le=1, description="Confidence in reply_needed.")
@@ -666,6 +701,12 @@ class ReplyNeededOutput(_Output):
         description=(
             "Only meaningful when pending_draft is true in the request: the turn says the earlier"
             " request is no longer needed. False otherwise."
+        )
+    )
+    decided_by: Literal["default", "user_rule"] = Field(
+        description=(
+            "'user_rule' when a rule in the user_rules block settled reply_needed (in either"
+            " direction); 'default' when the built-in rules did."
         )
     )
 

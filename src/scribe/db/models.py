@@ -232,15 +232,18 @@ class SkipCategory(enum.StrEnum):
     acknowledgment = "acknowledgment"
     forwarded = "forwarded"  # #47: the turn holds only forwarded messages (no model call)
     budget = "budget"  # #74: the user's daily LLM hard cap was reached (no model call)
+    informational = "informational"  # 013: the turn only informs and calls for no reaction
+    user_rule = "user_rule"  # 013: a user rule decided the skip
 
 
 class DecisionSource(enum.StrEnum):
-    pregate = "pregate"  # not a skip candidate (long, question, media)
+    pregate = "pregate"  # not a skip candidate (empty or very long)
     model = "model"  # the classifier decided
     fallback = "fallback"  # classifier failed or was unsure -> draft
     habit = "habit"  # the user usually replies to closings here (FR-005) -> draft
     disabled = "disabled"  # skipping is off for the chat -> draft
     user = "user"  # "draft anyway"
+    rule = "rule"  # 013: a user rule decided the draft or the skip
 
 
 class AccessEventKind(enum.StrEnum):
