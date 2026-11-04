@@ -815,6 +815,21 @@ def test_json_report_keeps_each_earlier_draft(run: ModuleType, tmp_path: Path) -
         ("I never said that. So I sent them without review", "without review", True),
         ("My passport number is [[passport number]].", "passport number is", False),
         ("My passport number is 1234 567890.", "passport number is", True),
+        # An indirect question names nothing (live eval of draft.md v14, passport-personal-data).
+        (
+            "Could you confirm what the passport number is needed for before I share it?",
+            "passport number is",
+            False,
+        ),
+        ("Here is what my passport number is: 1234 567890.", "passport number is", True),
+        ("What? My passport number is 1234 567890.", "passport number is", True),
+        ("The passport number is 1234 567890, right?", "passport number is", True),
+        # Not done yet (live eval of draft.md v15, forward-finance-files).
+        ("I'd rather check before anything gets forwarded.", "forwarded", False),
+        ("Before I forwarded them, I checked.", "forwarded", True),
+        ("Everything is forwarded, before you ask.", "forwarded", True),
+        ("Done. Before lunch it is forwarded", "forwarded", True),
+        ("Let me check until they are forwarded", "forwarded", False),
         ("Не одобрено", "одобрено", False),
         ("Готово, одобрено", "одобрено", True),
         ("the delay is now zero", "delay is now|sent all", True),
@@ -1130,3 +1145,28 @@ def test_dry_run_json_carries_verbosity(run: ModuleType, tmp_path: Path) -> None
     assert run.main(_args("--suite", "drafts", "--json", str(out))) == run.EXIT_OK
     stats = json.loads(out.read_text(encoding="utf-8"))["current routes"]["verbosity"]
     assert stats["drafts"] > 0 and "decision_placeholders" in stats
+
+
+def test_a_day_of_the_month_backed_by_a_cited_date_is_not_an_unsupported_number(
+    run: ModuleType,
+) -> None:
+    """Live eval of draft.md v15 (status-from-own-promise): «пришлю в пятницу, 16-го» repeats
+    the Friday of the cited «пришлю в пятницу» (today is Wednesday 14 October)."""
+    thread = run.Thread.model_validate(_rows("us1_style_basic")["status-from-own-promise"])
+    draft = thread.dry_run.draft
+
+    def findings(text: str, sources: list[dict[str, str]] | None = None) -> list[str]:
+        output = run.DraftOutput.model_validate(
+            {**draft, "text": text, "sources": sources or draft["sources"]}
+        )
+        found: list[str] = run.unsupported_facts(output, thread)
+        return found
+
+    assert findings("Привет! Как договаривались, пришлю в пятницу, 16-го") == []
+    assert findings("Привет! Пришлю в пятницу, 17-го") == ["number 17 not in context"]
+    assert findings("Привет! Пришлю 16 штук") == ["number 16 not in context"]
+    only_incoming = [{"kind": "message", "id": "msg:i1", "used_for": "the question"}]
+    assert findings("Привет! Пришлю в пятницу, 16-го", only_incoming) == [
+        "number 16 not in context",
+        "date Fri 16 Oct without a source",
+    ]

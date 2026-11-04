@@ -251,9 +251,12 @@ def test_draft_prompt_v13_covers_tasks_commitments_conflicts_and_the_date_anchor
     it, not necessarily the user; version 13 (specs/013): future actions default to "I'll
     look", no time or sender's date, and the user's rules arrive in their own trusted
     `user_rules` block; version 14 (issue #8, drafts on deepseek-flash) forbids filler and
-    makes a placeholder name the missing fact."""
+    makes a placeholder name the missing fact; version 15 (live eval of v14 on deepseek-flash)
+    answers a question about the user in the user's grammatical gender instead of impersonal
+    wording, states done work as a fact, and answers a request to send a document with the
+    intention to look only."""
     prompt = PromptStore(ROOT / "prompts").get("draft")
-    assert prompt.version == "14"
+    assert prompt.version == "15"
     assert "Never say the user does a task whose `assignees` name someone else" in prompt.text
     text = prompt.text.lower()
     assert "deadline_source" in text and "deadline_note" in text
@@ -547,3 +550,16 @@ def test_draft_prompt_v14_forbids_filler_and_names_the_missing_fact() -> None:
     assert "names that missing fact" in text and "`[[номер договора]]`" in text
     assert "not `[[когда пришлю]]`" in text and "[[secure channel or method]]" in text
     assert "Never use a placeholder for something the\n  data blocks answer" in text
+
+
+def test_draft_prompt_v15_keeps_the_gender_and_promises_nothing_for_documents() -> None:
+    """The live eval of v14 on deepseek-flash: drafts answered «Задачу закрыл(а)?» with «задача
+    закрыта» (no gendered word about the user), promised "I'll send the signed contract
+    [[date]]" and answered «Когда будет готов отчёт?» with «гляну» instead of a placeholder."""
+    text = PromptStore(ROOT / "prompts").get("draft").text
+    assert "«закрыл(а)?», «готов(а)?»" in text and "is dodging" in text
+    assert "Work the data shows as done is such a fact, not a promised result" in text
+    assert 'never «пришлю» or\n  "I\'ll send"' in text
+    assert "when something will be ready and no source gives the date" in text
+    # #12's no-promise default and #14's no-filler rule are still there.
+    assert "write only the intention to look" in text and "No filler" in text
