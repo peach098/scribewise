@@ -8,8 +8,10 @@ flags) and scores the drafts:
   mention every ``must_mention`` fact and contain no unsupported fact;
 - unsupported_facts: total count of ``must_not_claim`` hits plus numbers in the draft text that
   appear nowhere in the context (placeholders excluded); a phrase that is negated, followed by a
-  placeholder or part of an indirect question ("what the passport number is needed for?") is
-  not a hit (:func:`claims`);
+  placeholder, part of an indirect question ("what the passport number is needed for?") or of
+  a not-yet clause ("before anything gets forwarded") is not a hit (:func:`claims`); a day of
+  the month on its own («пятницу, 16-го») is not an unsupported number when a cited source
+  backs a date on that day;
 - flag recall: share of ``expected_flags`` the draft raised (needs_info, creates_commitment,
   sensitive[:category], tone_shift:<kind>);
 - conflict recall (SC-006): share of ``expected_conflicts`` (task / commitment ids) listed in
@@ -235,6 +237,9 @@ from scribe.telegram.gateway import FoundMessage  # noqa: E402
 EXIT_OK, EXIT_MISS, EXIT_ERROR = 0, 1, 2
 _PLACEHOLDER = re.compile(r"\[\[[^\[\]]*\]\]")
 _NUMBER = re.compile(r"\d+")
+# A day of the month written on its own («в пятницу, 16-го», "Friday the 16th"): no month, so
+# ``extract_dates`` does not see it; it is supported when a cited source backs a date that day.
+_DAY_OF_MONTH = re.compile(r"(?<!\d)(\d{1,2})(?:-?(?:го|е|ое)|st|nd|rd|th)(?!\w)", re.IGNORECASE)
 DEFAULT_TODAY = date(2026, 10, 14)  # threads without ``today`` resolve weekdays against this
 # "today" is the user's habitual same-day acknowledgement ("гляну сегодня"), not a claimed date.
 _TODAY_WORD = re.compile(r"\b(?:today|сегодня)\b", re.IGNORECASE)
@@ -456,10 +461,22 @@ _WH_BEFORE = re.compile(
     r"(?<!\w)(?:what|why|which|how|where|when)(?:\s+(?:the|a|an|my|your|his|her|their|our))?\s*$"
 )
 _SENTENCE_END = re.compile(r"[.!?\n]")
+# Something that has not happened yet states nothing either: "I'd rather check before anything
+# gets forwarded". Only "before / until / unless", a pronoun and a present-tense passive right
+# before the phrase count ("before anything gets", "until they are"); "before I forwarded it"
+# and "before lunch it is forwarded" still claim.
+_NOT_YET = re.compile(
+    r"(?<!\w)(?:before|until|unless)\s+"
+    r"(?:anything|something|everything|any of (?:it|them)|it|they|these|those)\s+"
+    r"(?:gets?|is|are)\s+$"
+)
 
 
 def _asked(text: str, start: int, end: int) -> bool:
-    """True when the occurrence ``text[start:end]`` sits in an indirect question."""
+    """True when the occurrence ``text[start:end]`` sits in an indirect question or in a
+    "before / until / unless ... gets <phrase>" clause."""
+    if _NOT_YET.search(text[:start]) is not None:
+        return True
     if _WH_BEFORE.search(text[:start]) is None:
         return False
     rest = _SENTENCE_END.search(text, end)
@@ -470,7 +487,8 @@ def claims(text: str, needle: str) -> bool:
     """``_has`` for ``must_not_claim``: some occurrence of an alternative is neither negated,
     nor followed by a placeholder ("my passport number is [[passport number]]" states
     nothing: the user fills it in or not), nor part of an indirect question ("could you
-    confirm what the passport number is needed for?")."""
+    confirm what the passport number is needed for?") or of a "before anything gets
+    forwarded" clause."""
     lowered = text.lower()
     for alt in (a.strip().lower() for a in needle.split("|")):
         if not alt:
@@ -495,8 +513,12 @@ def unsupported_facts(output: DraftOutput, thread: Thread) -> list[str]:
         f"claims {claim!r}" for claim in thread.expect.must_not_claim if claims(output.text, claim)
     ]
     context_numbers = {n for text in thread.context_texts for n in _NUMBER.findall(text)}
-    for number in _NUMBER.findall(_PLACEHOLDER.sub(" ", output.text)):
-        if number not in context_numbers:
+    text = _PLACEHOLDER.sub(" ", output.text)
+    backed_days = {str(day.day) for day in _backed_dates(output, thread)}
+    days_of_month = {m.start(1) for m in _DAY_OF_MONTH.finditer(text) if m.group(1) in backed_days}
+    for match in _NUMBER.finditer(text):
+        number = match.group()
+        if number not in context_numbers and match.start() not in days_of_month:
             findings.append(f"number {number} not in context")
     findings += undated_claims(output, thread)
     findings += commitment_due_misses(output, thread)
@@ -525,6 +547,14 @@ def undated_claims(output: DraftOutput, thread: Thread) -> list[str]:
     in_text = [day for day in extract_dates(text, today) if day != today]
     if not in_text:
         return []
+    backed = _backed_dates(output, thread)
+    return [f"date {format_day(day)} without a source" for day in in_text if day not in backed]
+
+
+def _backed_dates(output: DraftOutput, thread: Thread) -> set[date]:
+    """The dates the draft's cited sources back: cited tasks' and commitments' ``due``, and
+    the dates in cited messages (relative ones resolved against ``today``)."""
+    today = thread.today or DEFAULT_TODAY
     cited = {s.id for s in output.sources}
     backed: set[date] = set()
     for item in [*thread.tasks, *thread.commitments]:
@@ -533,7 +563,7 @@ def undated_claims(output: DraftOutput, thread: Thread) -> list[str]:
     for message in [*thread.incoming, *thread.history]:
         if message.id in cited:
             backed.update(extract_dates(message.text, today))
-    return [f"date {format_day(day)} without a source" for day in in_text if day not in backed]
+    return backed
 
 
 def conflict_hits(output: DraftOutput, expected: Sequence[str] | None) -> dict[str, bool]:
