@@ -22,6 +22,7 @@ from scribe.i18n import (
     format_date_time,
     format_day_month,
     format_weekday_date,
+    has_text,
     t,
     weekday_abbr,
 )
@@ -56,6 +57,13 @@ KNOWN_ACTIONS = frozenset(
         "skippage",
         "skipchats",
         "chatskip",
+        # specs/014 auto-send
+        "autostop",
+        "autooffer",
+        "autoconfirm",
+        "autowarn",
+        "chatauto",
+        "autowin",
     }
 )
 
@@ -210,6 +218,12 @@ class DraftCardView:
     lang: str = "en"  # the user's UI language (users.language)
     # 004 FR-011: a later message from the contact (contact_title) says it may be resolved.
     possibly_unnecessary: bool = False
+    # specs/014: when the draft will be sent on its own (already in the user's time zone), the
+    # ``autosend.reason`` codes of why it waits for the user in an auto-send chat, or that the
+    # user just cancelled the countdown. At most one of the three lines is shown.
+    auto_send_at: datetime | None = None
+    auto_send_reasons: tuple[str, ...] = ()
+    auto_send_stopped: bool = False
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -242,6 +256,24 @@ def _mismatch(key: str | None, parts: list[MismatchPart], lang: str) -> str:
         issue=f"{key}: " if key else "",
         dates=" · ".join(shown),
     )
+
+
+def _auto_send_lines(view: DraftCardView) -> list[str]:
+    """specs/014 FR-006/FR-012: the countdown, or why the card waits for the user."""
+    lang = view.lang
+    if view.auto_send_at is not None:
+        return [t("card.auto_send_at", lang, time=f"{view.auto_send_at:%H:%M}")]
+    if view.auto_send_stopped:
+        return [t("card.auto_send_stopped", lang)]
+    if view.auto_send_reasons:
+        labels = [_label_or_code("autosend.reason", code, lang) for code in view.auto_send_reasons]
+        return [t("card.auto_send_manual", lang, reasons=", ".join(labels))]
+    return []
+
+
+def _label_or_code(prefix: str, code: str, lang: str) -> str:
+    key = f"{prefix}.{code}"
+    return t(key, lang) if has_text(key) else code
 
 
 def render_draft_card(view: DraftCardView) -> str:
@@ -289,6 +321,8 @@ def render_draft_card(view: DraftCardView) -> str:
         tail.append(t("card.sources", lang, sources=" · ".join(shown)))
     tail += [_warning(code, lang) for code in view.warnings]
     tail.append(t("card.expires", lang, when=view.expires))
+    if not view.status:
+        tail += _auto_send_lines(view)
 
     def assemble(draft_text: str) -> str:
         parts = [
@@ -322,6 +356,25 @@ def draft_keyboard(draft_id: uuid.UUID, lang: str) -> InlineKeyboardMarkup:
                 button(t("btn.send", lang), format_callback("approve", draft_id)),
                 button(t("btn.edit", lang), format_callback("edit", draft_id)),
             ],
+            [
+                button(t("btn.regen", lang), format_callback("regen", draft_id)),
+                button(t("btn.reject", lang), format_callback("reject", draft_id)),
+                button(t("btn.sources", lang), format_callback("sources", draft_id)),
+            ],
+        ]
+    )
+
+
+def armed_draft_keyboard(draft_id: uuid.UUID, lang: str) -> InlineKeyboardMarkup:
+    """specs/014 FR-006: the keyboard of a card with a running countdown. ✅ is Send now (the
+    ordinary approval), ⏹ cancels the countdown and keeps the draft."""
+    return keyboard(
+        [
+            [
+                button(t("btn.send_now", lang), format_callback("approve", draft_id)),
+                button(t("btn.edit", lang), format_callback("edit", draft_id)),
+            ],
+            [button(t("btn.autostop", lang), format_callback("autostop", draft_id))],
             [
                 button(t("btn.regen", lang), format_callback("regen", draft_id)),
                 button(t("btn.reject", lang), format_callback("reject", draft_id)),

@@ -36,6 +36,7 @@ from scribe.db.repos import users as users_repo
 from scribe.i18n import Lang, language_for_code, normalize_lang
 from scribe.telegram.control_bot import (
     add_chats,
+    auto_send_flow,
     chat_picker,
     connect_flow,
     edit_prefill,
@@ -142,6 +143,7 @@ def create_dispatcher(
         connect_flow.create_router(),
         setup_flow.create_router(),
         review.create_router(),
+        auto_send_flow.create_router(),  # specs/014: autoconfirm:<chat>:<manual|offer|no>
         edit_prefill.create_router(),  # inline queries (✏️ Edit in input field)
     ]
     for router in [*base, *(routers or [])]:

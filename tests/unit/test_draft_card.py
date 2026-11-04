@@ -13,6 +13,7 @@ from scribe.drafting.stored_output import StoredEarlier, pack_output
 from scribe.telegram.control_bot.render import (
     TELEGRAM_TEXT_MAX,
     DraftCardView,
+    armed_draft_keyboard,
     confirm_send_keyboard,
     draft_keyboard,
     parse_callback,
@@ -119,6 +120,52 @@ def test_keyboards_use_valid_callbacks() -> None:
     assert all(parse_callback(b.callback_data).entity_id == str(draft_id) for r in rows for b in r)
     (confirm,) = confirm_send_keyboard("approve", draft_id, "en").inline_keyboard[0]
     assert confirm.callback_data == f"approve:{draft_id}:confirm"
+
+
+def test_armed_card_shows_the_local_time_it_will_be_sent() -> None:
+    sent_at = datetime(2026, 10, 14, 14, 32, tzinfo=UTC)
+    card = render_draft_card(_view(auto_send_at=sent_at))
+    lines = card.split("\n")
+    assert "⏱ Will be sent automatically at 14:32" in lines
+    assert lines.index("⏳ Expires 10:03 tomorrow") < lines.index(
+        "⏱ Will be sent automatically at 14:32"
+    )
+    assert "⏱ Отправлю автоматически в 14:32" in render_draft_card(
+        _view(auto_send_at=sent_at, lang="ru")
+    )
+
+
+def test_card_that_needs_approval_names_the_reasons() -> None:
+    card = render_draft_card(_view(auto_send_reasons=("commitment", "sensitive")))
+    assert "✋ Needs your approval: new promise, sensitive topic" in card
+    assert "Will be sent automatically" not in card
+    stopped = render_draft_card(_view(auto_send_stopped=True))
+    assert "⏹ Automatic sending cancelled" in stopped
+    assert "✋" not in stopped
+
+
+def test_final_status_hides_the_auto_send_lines() -> None:
+    card = render_draft_card(
+        _view(
+            auto_send_at=datetime(2026, 10, 14, 14, 32, tzinfo=UTC),
+            auto_send_reasons=("commitment",),
+            status="✅ Sent automatically at 14:32",
+        )
+    )
+    assert "Will be sent automatically" not in card and "Needs your approval" not in card
+    assert card.endswith("✅ Sent automatically at 14:32")
+
+
+def test_armed_keyboard_has_send_now_and_stop() -> None:
+    draft_id = uuid.uuid4()
+    rows = armed_draft_keyboard(draft_id, "en").inline_keyboard
+    assert [[b.callback_data for b in row] for row in rows] == [
+        [f"approve:{draft_id}", f"edit:{draft_id}"],
+        [f"autostop:{draft_id}"],
+        [f"regen:{draft_id}", f"reject:{draft_id}", f"sources:{draft_id}"],
+    ]
+    assert rows[0][0].text == "✅ Send now" and rows[1][0].text == "⏹ Don't send automatically"
+    assert armed_draft_keyboard(draft_id, "ru").inline_keyboard[1][0].text.startswith("⏹")
 
 
 def test_possibly_unnecessary_banner() -> None:

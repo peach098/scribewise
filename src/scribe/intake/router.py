@@ -67,7 +67,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, Protocol
 
-from sqlalchemy import exists, func, or_, select, update
+from sqlalchemy import and_, case, exists, func, literal, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.chats import work_account
@@ -76,6 +76,7 @@ from scribe.config import Settings
 from scribe.context.history import turn_messages
 from scribe.db.models import (
     ActivityKind,
+    AutoSendStop,
     ChatKind,
     Contact,
     ContactKind,
@@ -672,7 +673,13 @@ class IntakeRouter:
         row = (
             await session.execute(
                 select(
-                    Draft.id, Draft.outdated, ConversationTurn.id, ConversationTurn.last_message_id
+                    Draft.id,
+                    Draft.outdated,
+                    ConversationTurn.id,
+                    ConversationTurn.last_message_id,
+                    Draft.auto_send_due_at.is_not(None)
+                    & Draft.auto_send_stop.is_(None)
+                    & Draft.auto_approved_at.is_(None),
                 )
                 .join(ConversationTurn, ConversationTurn.id == Draft.conversation_turn_id)
                 .where(
@@ -688,15 +695,44 @@ class IntakeRouter:
         ).first()
         if row is None:
             return None, None
-        draft_id, was_outdated, turn_id, last_message_id = row
+        draft_id, was_outdated, turn_id, last_message_id, was_counting_down = row
+        # specs/014: a running countdown ends with the draft's last word (a claimed one, with
+        # auto_approved_at set, is already being sent: the send itself refuses an outdated draft).
+        stop_countdown = case(
+            (
+                and_(
+                    Draft.auto_send_due_at.is_not(None),
+                    Draft.auto_send_stop.is_(None),
+                    Draft.auto_approved_at.is_(None),
+                ),
+                literal(AutoSendStop.outdated, type_=Draft.auto_send_stop.type),
+            ),
+            else_=Draft.auto_send_stop,
+        )
         flagged = await session.execute(
             update(Draft)
             .where(Draft.id == draft_id, Draft.state == DraftState.pending)
-            .values(outdated=True)
-            .returning(Draft.id)
+            .values(outdated=True, auto_send_stop=stop_countdown)
+            .returning(Draft.id, Draft.auto_send_stop)
         )
-        if flagged.scalar_one_or_none() is None:
+        flagged_row = flagged.first()
+        if flagged_row is None:
             return None, None
+        if was_counting_down and flagged_row[1] == AutoSendStop.outdated:
+            await activity_repo.record(
+                session,
+                chat.user_id,
+                ActivityKind.auto_send_stopped,
+                draft_id=draft_id,
+                conversation_turn_id=turn_id,
+                meta={"reason": AutoSendStop.outdated.value},
+            )
+            log.info(
+                "auto_send_stopped",
+                user_id=str(chat.user_id),
+                draft_id=str(draft_id),
+                reason=AutoSendStop.outdated.value,
+            )
         flag = FlaggedDraft(
             draft_id, bool(was_outdated), stored.id, chat.id, stored.telegram_message_id
         )

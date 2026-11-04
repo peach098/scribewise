@@ -10,9 +10,10 @@ from typing import Any
 from aiogram.methods import EditMessageText, SendMessage
 from sqlalchemy import select
 
-from scribe.db.models import ConversationTurn, User, WorkChat
+from scribe.db.models import AutoSendSource, ConversationTurn, DraftDecision, User, WorkChat
 from scribe.intake.events import ChatEventHandler
 from scribe.scheduling.deadlines import register_review_deadlines
+from scribe.sending.auto_send import AutoSender
 from scribe.telegram.gateway import OutgoingEvent, ReadEvent
 from tests.integration.us1_support import US1Harness, next_message_id
 
@@ -35,6 +36,16 @@ class US2Harness(US1Harness):
         self.gateway.on_read_elsewhere(self.events.handle_read_elsewhere)
         self.intake.on_draft_outdated(self.presenter.show_outdated)
         register_review_deadlines(self.scheduler, self.presenter, clock=self.clock)
+        # specs/014: the one scheduler step that can send, as in the service.
+        self.auto_sender = AutoSender(
+            self.session_factory,
+            self.gateway,
+            self.presenter,
+            clock=self.clock,
+            marker=self.marker,
+            commitments=None,
+        )
+        self.scheduler.on_auto_sends(self.auto_sender)
 
     async def manual_reply(
         self, user: User, chat: WorkChat, text: str = "Synthetic reply", **values: Any
@@ -93,3 +104,25 @@ def button_texts(markup: Any) -> list[str]:
     if markup is None:
         return []
     return [b.text for row in markup.inline_keyboard for b in row]
+
+
+async def arm_chat(harness: US2Harness, chat: WorkChat) -> None:
+    """Turn auto-send on for ``chat`` directly (specs/014 contracts/internal-interfaces.md §9)."""
+    async with harness.session_factory() as session:
+        stored = await session.get(WorkChat, chat.id)
+        assert stored is not None
+        stored.auto_send = True
+        stored.auto_send_source = AutoSendSource.manual
+        stored.auto_send_changed_at = harness.clock()
+        await session.commit()
+
+
+async def decision_rows(harness: US2Harness, chat: WorkChat) -> list[DraftDecision]:
+    """The chat's ``draft_decisions`` rows, oldest first."""
+    async with harness.session_factory() as session:
+        result = await session.execute(
+            select(DraftDecision)
+            .where(DraftDecision.work_chat_id == chat.id)
+            .order_by(DraftDecision.at, DraftDecision.created_at)
+        )
+        return list(result.scalars().all())

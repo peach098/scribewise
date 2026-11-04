@@ -1,11 +1,13 @@
 """The only place a reply is sent (Constitution Principle I, FR-012 to FR-014).
 
 ``send_approved_draft`` is called only from the approve/edit callbacks in
-``telegram/control_bot/review.py``. It refuses unless the draft is ``pending``, not expired,
-explicitly approved (``approved_by_user_at`` set by that callback), not already sent, its turn
-still ``pending_review``, and not ``outdated`` unless the caller passes ``allow_outdated``
-(the "Send anyway" button or the user's own edited text); the database check constraint
-``sent_requires_approval`` backs this up. A user whose access is suspended
+``telegram/control_bot/review.py`` and from ``AutoSender`` (``sending/auto_send.py``, specs/014).
+It refuses unless the draft is ``pending``, not expired, approved (``approved_by_user_at`` set by
+the user's callback, or, for ``auto=True``, ``auto_approved_at`` set by the auto-send step for a
+draft whose cancel window ended), not already sent, its turn still ``pending_review``, and not
+``outdated`` unless the caller passes ``allow_outdated`` (the "Send anyway" button or the user's
+own edited text); the database check constraint ``sent_requires_approval`` backs this up. An
+automatic send never carries an edited text. A user whose access is suspended
 (``users.access_suspended_at``, specs/005) gets ``AccessSuspended`` and nothing is sent.
 
 Idempotency (#54): once every check passes for the first time, the draft gets
@@ -35,6 +37,11 @@ US3 (FR-031): after the commit, the sent text goes to commitment extraction
 again. The extraction's database reads are awaited, the LLM call runs in the background, and any
 failure is logged and swallowed: the reply has already been sent and recorded.
 
+specs/014 (``draft_decisions``): in the same transaction as the send, one row records what was
+sent: ``auto_sent`` for an automatic send, else ``sent_unchanged`` or ``sent_edited``, with
+``during_auto_send`` set when the draft had a countdown. They feed the per-chat statistics behind
+the auto-send offer and warning.
+
 specs/009 (mark chats unread): with an ``UnreadMarker`` (``marker``), the chat is marked unread
 right after the commit, before commitment extraction, so the chat list still shows where the
 agent answered. It runs after the draft and turn locks are released, is bounded (5 s) and never
@@ -58,6 +65,7 @@ from scribe.db.models import (
     ChatKind,
     ConversationTurn,
     Draft,
+    DraftDecisionKind,
     DraftState,
     Message,
     TurnState,
@@ -65,6 +73,7 @@ from scribe.db.models import (
 )
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
+from scribe.db.repos import decisions as decisions_repo
 from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import messages as messages_repo
 from scribe.drafting.stored_output import REPLY_TO_KEY as REPLY_TO_KEY  # re-export
@@ -127,10 +136,15 @@ async def send_approved_draft(
     draft_id: uuid.UUID,
     edited_text: str | None = None,
     allow_outdated: bool = False,
+    auto: bool = False,
     clock: Clock = utcnow,
     commitments: CommitmentExtractor | None = None,
     marker: UnreadMarker | None = None,
 ) -> SendResult:
+    """Send the approved draft. ``auto=True`` (``AutoSender`` only): the approval is the
+    step's ``auto_approved_at``, and an edited text is refused."""
+    if auto and edited_text is not None:
+        raise SendRefused("an automatic send cannot carry an edited text")
     # At most two passes: the first may only reserve the send key (#54), the second sends.
     for _ in range(2):
         result = await _send_once(
@@ -140,6 +154,7 @@ async def send_approved_draft(
             draft_id=draft_id,
             edited_text=edited_text,
             allow_outdated=allow_outdated,
+            auto=auto,
             clock=clock,
             commitments=commitments,
             marker=marker,
@@ -157,6 +172,7 @@ async def _send_once(
     draft_id: uuid.UUID,
     edited_text: str | None,
     allow_outdated: bool,
+    auto: bool,
     clock: Clock,
     commitments: CommitmentExtractor | None,
     marker: UnreadMarker | None,
@@ -170,6 +186,8 @@ async def _send_once(
             raise AccessSuspended("access has ended")
         now = clock()
         _check_sendable(draft, now)
+        if auto and draft.auto_approved_at is None:
+            raise SendRefused("draft was not approved automatically")
         if draft.outdated and not allow_outdated:
             raise DraftOutdated("new messages arrived after this draft")
         # Lock order draft -> turn, both before Telegram is called.
@@ -208,8 +226,9 @@ async def _send_once(
             # have been delivered with the other text.
             raise SendAttemptUnresolved("an earlier attempt with another text may be delivered")
 
-        # Principle I: reached only with state=pending and approved_by_user_at set (checked
-        # above, with the row locked so the check cannot go stale before the send).
+        # Principle I: reached only with state=pending and an approval (the user's
+        # approved_by_user_at, or auto_approved_at for an automatic send), checked above with the
+        # row locked so the check cannot go stale before the send.
         telegram_message_id = await gateway.send_text(
             user_id, chat.telegram_chat_id, text, reply_to, random_id=draft.send_random_id
         )
@@ -236,6 +255,7 @@ async def _send_once(
             is_outgoing=True,
             reply_to_telegram_message_id=reply_to,
         )
+        approved_at = draft.approved_by_user_at or draft.auto_approved_at
         await activity_repo.record(
             session,
             user_id,
@@ -245,12 +265,26 @@ async def _send_once(
             conversation_turn_id=turn.id,
             meta={
                 "edited": edited_text is not None,
-                "approved_at": draft.approved_by_user_at.isoformat()
-                if draft.approved_by_user_at
-                else None,
+                "approved_at": approved_at.isoformat() if approved_at else None,
+                "auto": auto,
                 "telegram_message_id": telegram_message_id,
                 "reply": reply_to is not None,
             },
+        )
+        await decisions_repo.record(
+            session,
+            user_id=user_id,
+            work_chat_id=chat.id,
+            draft_id=draft.id,
+            decision=(
+                DraftDecisionKind.auto_sent
+                if auto
+                else DraftDecisionKind.sent_unchanged
+                if edited_text is None
+                else DraftDecisionKind.sent_edited
+            ),
+            during_auto_send=draft.auto_send_due_at is not None,
+            at=sent_at,
         )
         work_chat_id, contact_id = chat.id, turn.contact_id
         await session.commit()
@@ -260,6 +294,7 @@ async def _send_once(
         draft_id=str(draft_id),
         edited=edited_text is not None,
         reply=reply_to is not None,
+        auto=auto,
     )
     if marker is not None:  # outside the row locks (specs/009); never raises
         await marker.after_send(user_id, work_chat_id, telegram_message_id)
@@ -357,7 +392,7 @@ def _check_sendable(draft: Draft, now: datetime) -> None:
         raise SendRefused(f"draft is {draft.state.value}")
     if draft.expires_at <= now:
         raise SendRefused("draft has expired")
-    if draft.approved_by_user_at is None:
+    if draft.approved_by_user_at is None and draft.auto_approved_at is None:
         raise SendRefused("draft was not approved")
     if draft.sent_telegram_message_id is not None:
         raise SendRefused("draft was already sent")

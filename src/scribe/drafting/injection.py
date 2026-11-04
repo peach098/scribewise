@@ -16,9 +16,9 @@ model output, never in it: the model can neither raise nor clear them, and a reg
 is checked again from scratch.
 
 Both warnings are **hard stops** (:data:`HARD_STOP_WARNINGS`, :func:`hard_stops`): the review
-card shows them and Send asks for an explicit confirmation. Scribe has no automatic sending
-(constitution I: every message is approved); should an opt-in auto-send mode ever be added, it
-must refuse any draft for which :func:`hard_stops` is non-empty: that function is its seam.
+card shows them and Send asks for an explicit confirmation. The opt-in auto-send mode (specs/014,
+``sending/auto_send.py``) refuses any draft for which :func:`hard_stops` is non-empty: that
+function is its seam.
 
 Patterns are word-start anchored like ``flags.py``, English and Russian. False positives cost a
 confirmation tap, false negatives may cost an unwanted send, so the lists lean towards

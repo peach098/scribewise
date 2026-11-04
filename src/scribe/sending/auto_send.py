@@ -30,22 +30,48 @@ Logs carry ids and codes only, never text (Principle II).
 from __future__ import annotations
 
 import enum
-from collections.abc import Sequence
+import uuid
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from typing import Protocol
+from zoneinfo import ZoneInfo
 
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from scribe.clock import Clock, utcnow
+from scribe.context.commitments import CommitmentExtractor
 from scribe.context.task_dates import MISMATCH_PREFIX
 from scribe.db.models import (
+    ActivityKind,
+    AutoSendSource,
+    AutoSendStop,
+    ConversationTurn,
     Draft,
+    DraftDecisionKind,
+    DraftState,
     User,
     UserState,
     WorkChat,
 )
+from scribe.db.repos import activity as activity_repo
+from scribe.db.repos import decisions as decisions_repo
 from scribe.drafting.injection import hard_stops
 from scribe.drafting.placeholders import PLACEHOLDER
+from scribe.drafting.stored_output import load_stored_output
+from scribe.i18n import LocalizedError, Msg, t
 from scribe.llm.provider import DraftOutput
 from scribe.logging import get_logger
 from scribe.scheduling.working_hours import next_allowed
+from scribe.sending.send import (
+    AccessSuspended,
+    DraftOutdated,
+    SendRefused,
+    send_approved_draft,
+)
+from scribe.telegram.gateway import MessagingGateway
+from scribe.telegram.unread_mark import UnreadMarker
 
 log = get_logger("scribe.sending")
 
@@ -193,3 +219,580 @@ def _outside_hours(moment: datetime, user: User) -> bool:
     except Exception:  # an unreadable schedule or time zone: do not send
         return True
     return allowed != moment
+
+
+# --- the countdown ------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArmPlan:
+    """What the card is posted with (research A4a): ``planned_due_at`` is the time printed on it,
+    ``None`` when the draft is not eligible (``reasons`` says why)."""
+
+    planned_due_at: datetime | None
+    reasons: tuple[BlockReason, ...]
+
+
+def is_armed(draft: Draft) -> bool:
+    """A countdown is running: set when the card was posted, not stopped, not yet claimed."""
+    return (
+        draft.state == DraftState.pending
+        and draft.auto_send_due_at is not None
+        and draft.auto_send_stop is None
+        and draft.auto_approved_at is None
+    )
+
+
+def is_firing(draft: Draft) -> bool:
+    """The step has claimed the draft (``auto_approved_at`` set) and the send is under way or
+    about to start: a tap on the card is too late. A failed send sets ``auto_send_stop`` and ends
+    this state."""
+    return (
+        draft.state == DraftState.pending
+        and draft.auto_approved_at is not None
+        and draft.auto_send_stop is None
+    )
+
+
+def stop_countdown(draft: Draft, reason: AutoSendStop) -> bool:
+    """Stop a running countdown on a row the caller holds ``FOR UPDATE``. True if it was running;
+    False if there was none, it had stopped, or the step already claimed the draft."""
+    if not is_armed(draft):
+        return False
+    draft.auto_send_stop = reason
+    return True
+
+
+async def note_stopped(
+    session: AsyncSession, draft: Draft, reason: AutoSendStop, at: datetime
+) -> None:
+    """Record a stopped countdown (``auto_send_stopped``, attributable per Principle I)."""
+    await activity_repo.record(
+        session,
+        draft.user_id,
+        ActivityKind.auto_send_stopped,
+        at=at,
+        draft_id=draft.id,
+        conversation_turn_id=draft.conversation_turn_id,
+        meta={"reason": reason.value},
+    )
+    log.info(
+        "auto_send_stopped",
+        user_id=str(draft.user_id),
+        draft_id=str(draft.id),
+        reason=reason.value,
+    )
+
+
+async def _lock_draft(
+    session: AsyncSession, user_id: uuid.UUID, draft_id: uuid.UUID
+) -> Draft | None:
+    return (
+        await session.execute(
+            select(Draft)
+            .where(Draft.user_id == user_id, Draft.id == draft_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+
+
+async def stop_for_user(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    user_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    now: datetime,
+    cancelled: bool = False,
+) -> bool | None:
+    """The user acted on a card: stop its countdown under the draft lock (research A3). ``None``:
+    too late, the step already claimed the draft; True: a running countdown was stopped; False:
+    none was running. ``cancelled`` (the ⏹ button) also records an ``auto_cancelled`` decision."""
+    async with session_factory() as session:
+        draft = await _lock_draft(session, user_id, draft_id)
+        if draft is None:
+            return False
+        if is_firing(draft):
+            return None
+        stopped = stop_countdown(draft, AutoSendStop.user_action)
+        if stopped:
+            await note_stopped(session, draft, AutoSendStop.user_action, now)
+            if cancelled:
+                await decisions_repo.record(
+                    session,
+                    user_id=user_id,
+                    work_chat_id=await _work_chat_id(session, draft),
+                    draft_id=draft.id,
+                    decision=DraftDecisionKind.auto_cancelled,
+                    during_auto_send=True,
+                    at=now,
+                )
+        await session.commit()
+    return stopped
+
+
+async def _work_chat_id(session: AsyncSession, draft: Draft) -> uuid.UUID:
+    return (
+        await session.execute(
+            select(ConversationTurn.work_chat_id).where(
+                ConversationTurn.id == draft.conversation_turn_id
+            )
+        )
+    ).scalar_one()
+
+
+async def _context(
+    session: AsyncSession, draft: Draft, *, share: bool
+) -> tuple[WorkChat, User] | None:
+    """The draft's work chat and user. ``share``: read them ``FOR SHARE SKIP LOCKED`` (the caller
+    holds the draft row, and chat / user writers lock in the other order, so waiting could
+    deadlock); None when a writer holds one of them or the chat is gone: the caller leaves the
+    draft for the next tick or treats it as not armed."""
+    chat_query = select(WorkChat).where(
+        WorkChat.user_id == draft.user_id,
+        WorkChat.id
+        == select(ConversationTurn.work_chat_id)
+        .where(ConversationTurn.id == draft.conversation_turn_id)
+        .scalar_subquery(),
+    )
+    user_query = select(User).where(User.id == draft.user_id)
+    if share:
+        chat_query = chat_query.with_for_update(read=True, skip_locked=True)
+        user_query = user_query.with_for_update(read=True, skip_locked=True)
+    chat = (await session.execute(chat_query.execution_options(populate_existing=True))).scalar()
+    user = (await session.execute(user_query.execution_options(populate_existing=True))).scalar()
+    if chat is None or user is None:
+        return None
+    return chat, user
+
+
+def _evaluate(
+    draft: Draft, chat: WorkChat, user: User, *, fire_at: datetime | None = None
+) -> Eligibility:
+    stored = load_stored_output(draft.output_json, draft.text)
+    output = stored.output
+    return eligibility(
+        draft=draft,
+        output=output,
+        system_warnings=stored.system_warnings,
+        context_warnings=list(output.context_warnings) if output is not None else [],
+        chat=chat,
+        user=user,
+        fire_at=fire_at,
+    )
+
+
+async def current_reasons(session: AsyncSession, draft_id: uuid.UUID) -> tuple[BlockReason, ...]:
+    """Why the draft would not be sent on its own right now (the card line after a failed
+    arming); empty if it would be, or if it cannot be evaluated."""
+    draft = await session.get(Draft, draft_id)
+    context = await _context(session, draft, share=False) if draft is not None else None
+    if draft is None or context is None:
+        return ()
+    return _evaluate(draft, *context).reasons
+
+
+async def plan_arm(session: AsyncSession, *, draft_id: uuid.UUID, now: datetime) -> ArmPlan | None:
+    """Before the card is posted (read-only): the plan it is posted with. None when the chat has
+    auto-send off, the draft is gone or finished, or it already has a card (a re-post never
+    arms)."""
+    draft = await session.get(Draft, draft_id)
+    if draft is None or draft.state != DraftState.pending or draft.control_message_id is not None:
+        return None
+    context = await _context(session, draft, share=False)
+    if context is None:
+        return None
+    chat, user = context
+    if not chat.auto_send:
+        return None
+    result = _evaluate(draft, chat, user)
+    planned = now + timedelta(seconds=user.auto_send_window_s) if result.eligible else None
+    return ArmPlan(planned, result.reasons)
+
+
+async def commit_arm(
+    session: AsyncSession,
+    *,
+    draft_id: uuid.UUID,
+    plan: ArmPlan,
+    control_message_id: int,
+    stored_at: datetime,
+) -> bool:
+    """In the transaction that stored ``control_message_id`` after the card was posted (research
+    A4a): re-check eligibility under the locks and start the countdown. The window counts from
+    ``stored_at``, never earlier than the time the card shows. False: not armed (the draft
+    changed meanwhile); the caller re-renders the card without the countdown."""
+    if plan.planned_due_at is None:
+        return False
+    draft = (
+        await session.execute(
+            select(Draft)
+            .where(Draft.id == draft_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if draft is None or draft.state != DraftState.pending:
+        return False
+    if draft.control_message_id != control_message_id:  # the card this plan was made for
+        return False
+    context = await _context(session, draft, share=True)
+    if context is None:
+        return False
+    chat, user = context
+    result = _evaluate(draft, chat, user)
+    if not result.eligible:
+        log.info(
+            "auto_send_blocked",
+            user_id=str(draft.user_id),
+            draft_id=str(draft.id),
+            reasons=[r.value for r in result.reasons],
+            phase="arm",
+        )
+        return False
+    due_at = max(plan.planned_due_at, stored_at + timedelta(seconds=user.auto_send_window_s))
+    draft.auto_send_due_at = due_at
+    draft.auto_send_stop = None
+    await session.flush()
+    log.info(
+        "auto_send_armed",
+        user_id=str(draft.user_id),
+        draft_id=str(draft.id),
+        due_at=due_at.isoformat(),
+    )
+    return True
+
+
+async def stop_chat_countdowns(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    work_chat_ids: Sequence[uuid.UUID] | None,
+    reason: AutoSendStop,
+    at: datetime | None = None,
+) -> list[uuid.UUID]:
+    """Stop every running countdown of the given chats (``None``: all the user's chats) with one
+    conditional update; a draft the step has claimed is left alone. Returns the draft ids whose
+    cards must be re-rendered."""
+    turns = select(ConversationTurn.id).where(ConversationTurn.user_id == user_id)
+    if work_chat_ids is not None:
+        turns = turns.where(ConversationTurn.work_chat_id.in_(work_chat_ids))
+    result = await session.execute(
+        update(Draft)
+        .where(
+            Draft.user_id == user_id,
+            Draft.state == DraftState.pending,
+            Draft.auto_send_due_at.is_not(None),
+            Draft.auto_send_stop.is_(None),
+            Draft.auto_approved_at.is_(None),
+            Draft.conversation_turn_id.in_(turns),
+        )
+        .values(auto_send_stop=reason)
+        .returning(Draft.id, Draft.conversation_turn_id)
+        .execution_options(synchronize_session=False)
+    )
+    stopped = list(result.all())
+    moment = at or utcnow()
+    for draft_id, turn_id in stopped:
+        await activity_repo.record(
+            session,
+            user_id,
+            ActivityKind.auto_send_stopped,
+            at=moment,
+            draft_id=draft_id,
+            conversation_turn_id=turn_id,
+            meta={"reason": reason.value},
+        )
+        log.info(
+            "auto_send_stopped", user_id=str(user_id), draft_id=str(draft_id), reason=reason.value
+        )
+    return [draft_id for draft_id, _ in stopped]
+
+
+async def set_chat_auto_send(
+    session: AsyncSession,
+    *,
+    user_id: uuid.UUID,
+    work_chat_id: uuid.UUID,
+    on: bool,
+    source: AutoSendSource | None,
+    now: datetime,
+    reason: str = "user",
+) -> list[uuid.UUID]:
+    """Turn auto-send on or off for one chat (FR-001, FR-009). On needs an enabled, not excluded
+    chat and a ``source`` (``autosend.chat_not_active`` otherwise); off also stops the chat's
+    running countdowns. Returns the draft ids whose cards must be re-rendered. Locks the chat
+    row; the caller commits."""
+    chat = (
+        await session.execute(
+            select(WorkChat)
+            .where(WorkChat.user_id == user_id, WorkChat.id == work_chat_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+    ).scalar_one_or_none()
+    if chat is None:
+        raise LocalizedError("alert.chat_not_found")
+    if on:
+        if source is None:
+            raise ValueError("turning auto-send on needs a source")
+        if not chat.enabled or chat.excluded:
+            raise LocalizedError("autosend.chat_not_active")
+        if chat.auto_send:
+            return []
+        chat.auto_send = True
+        chat.auto_send_source = source
+        chat.auto_send_changed_at = now
+        await activity_repo.record(
+            session,
+            user_id,
+            ActivityKind.auto_send_on,
+            at=now,
+            meta={"work_chat_id": str(chat.id), "source": source.value},
+        )
+        log.info(
+            "auto_send_changed",
+            user_id=str(user_id),
+            work_chat_id=str(chat.id),
+            on=True,
+            source=source.value,
+        )
+        return []
+    if not chat.auto_send:
+        return []
+    chat.auto_send = False
+    chat.auto_send_changed_at = now
+    await activity_repo.record(
+        session,
+        user_id,
+        ActivityKind.auto_send_off,
+        at=now,
+        meta={"work_chat_id": str(chat.id), "reason": reason},
+    )
+    log.info(
+        "auto_send_changed",
+        user_id=str(user_id),
+        work_chat_id=str(chat.id),
+        on=False,
+        reason=reason,
+    )
+    return await stop_chat_countdowns(
+        session, user_id=user_id, work_chat_ids=[chat.id], reason=AutoSendStop.disabled, at=now
+    )
+
+
+def window_label(seconds: int, lang: str) -> str:
+    """``2 min`` / ``90 s`` in the user's language."""
+    if seconds % 60 == 0:
+        return t("unit.min", lang, n=seconds // 60)
+    return t("unit.s", lang, n=seconds)
+
+
+# --- the scheduler step ---------------------------------------------------------------------------
+
+
+class CardUpdates(Protocol):
+    """The card presenter (``telegram/control_bot/review.py``)."""
+
+    async def show_status(self, user_id: uuid.UUID, draft_id: uuid.UUID, status: Msg) -> None: ...
+
+    async def show_manual(
+        self,
+        user_id: uuid.UUID,
+        draft_id: uuid.UUID,
+        reasons: Sequence[str] | None = None,
+        *,
+        stopped: bool = False,
+    ) -> None: ...
+
+    async def show_outdated(self, user_id: uuid.UUID, draft_id: uuid.UUID) -> None: ...
+
+
+class DecisionAdvisor(Protocol):
+    """Evaluates the offer and the suggestion to turn auto-send off after a decision."""
+
+    async def after_decision(self, user_id: uuid.UUID, work_chat_id: uuid.UUID) -> None: ...
+
+
+@dataclass(frozen=True)
+class _Claimed:
+    user_id: uuid.UUID
+    draft_id: uuid.UUID
+    work_chat_id: uuid.UUID
+    timezone: str
+
+
+@dataclass(frozen=True)
+class _Blocked:
+    user_id: uuid.UUID
+    draft_id: uuid.UUID
+    reasons: tuple[str, ...]
+
+
+def _stop_for(reasons: Sequence[BlockReason]) -> AutoSendStop:
+    """Why a countdown that reached its end is stopped (the card says the reasons themselves)."""
+    if BlockReason.paused in reasons:
+        return AutoSendStop.paused
+    if BlockReason.outside_hours in reasons:
+        return AutoSendStop.outside_hours
+    if BlockReason.chat_off in reasons:
+        return AutoSendStop.disabled
+    return AutoSendStop.ineligible
+
+
+class AutoSender:
+    """The scheduler's auto-send step handler (``Scheduler.on_auto_sends``) and the only code that
+    approves a send without a tap. For each draft whose window has ended it checks eligibility
+    again under the locks: eligible drafts get ``auto_approved_at`` (committed with the step) and
+    are sent right after, blocked ones are stopped and their cards say why. A failed send is
+    never retried here; the user's own Send reuses the same ``random_id`` (#54)."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        gateway: MessagingGateway,
+        presenter: CardUpdates,
+        *,
+        clock: Clock = utcnow,
+        marker: UnreadMarker | None = None,
+        commitments: CommitmentExtractor | None = None,
+        advisor: DecisionAdvisor | None = None,
+    ) -> None:
+        self._session_factory = session_factory
+        self._gateway = gateway
+        self._presenter = presenter
+        self._clock = clock
+        self._marker = marker
+        self._commitments = commitments
+        self._advisor = advisor
+
+    async def __call__(
+        self, session: AsyncSession, drafts: Sequence[Draft]
+    ) -> Callable[[], Awaitable[None]] | None:
+        now = self._clock()
+        claimed: list[_Claimed] = []
+        blocked: list[_Blocked] = []
+        for draft in drafts:
+            if draft.expires_at <= now or draft.auto_send_due_at is None:
+                continue  # the expiry step ends it
+            context = await _context(session, draft, share=True)
+            if context is None:  # a writer holds the chat or user: decide on the next tick
+                continue
+            chat, user = context
+            result = _evaluate(draft, chat, user, fire_at=now)
+            reasons: tuple[str, ...] = tuple(r.value for r in result.reasons)
+            stop: AutoSendStop | None = None
+            if now - draft.auto_send_due_at > FIRE_GRACE:
+                stop = AutoSendStop.ineligible
+                reasons = reasons or (AutoSendStop.ineligible.value,)
+            elif not result.eligible:
+                stop = _stop_for(result.reasons)
+            if stop is not None:
+                draft.auto_send_stop = stop
+                await note_stopped(session, draft, stop, now)
+                log.info(
+                    "auto_send_blocked",
+                    user_id=str(draft.user_id),
+                    draft_id=str(draft.id),
+                    reasons=list(reasons),
+                    phase="fire",
+                )
+                blocked.append(_Blocked(draft.user_id, draft.id, reasons))
+                continue
+            draft.auto_approved_at = now  # Principle I: never approved_by_user_at
+            await activity_repo.record(
+                session,
+                draft.user_id,
+                ActivityKind.auto_approved,
+                at=now,
+                draft_id=draft.id,
+                conversation_turn_id=draft.conversation_turn_id,
+                meta={"window_s": user.auto_send_window_s},
+            )
+            claimed.append(_Claimed(draft.user_id, draft.id, chat.id, user.timezone))
+        await session.flush()
+        if not claimed and not blocked:
+            return None
+
+        async def after_commit() -> None:
+            for item in blocked:
+                await self._card(
+                    self._presenter.show_manual(item.user_id, item.draft_id, item.reasons)
+                )
+            for claim in claimed:
+                await self._send(claim)
+
+        return after_commit
+
+    async def _send(self, claim: _Claimed) -> None:
+        log.info("auto_send_fired", user_id=str(claim.user_id), draft_id=str(claim.draft_id))
+        try:
+            result = await send_approved_draft(
+                self._session_factory,
+                self._gateway,
+                user_id=claim.user_id,
+                draft_id=claim.draft_id,
+                auto=True,
+                clock=self._clock,
+                commitments=self._commitments,
+                marker=self._marker,
+            )
+        except DraftOutdated:  # a message arrived after the claim: the existing outdated card
+            await self._stop_after_claim(claim, AutoSendStop.outdated)
+            await self._card(self._presenter.show_outdated(claim.user_id, claim.draft_id))
+            return
+        except (AccessSuspended, SendRefused) as exc:
+            log.warning("auto_send_refused", draft_id=str(claim.draft_id), reason=str(exc))
+            if await self._stop_after_claim(claim, AutoSendStop.ineligible):
+                await self._card(
+                    self._presenter.show_manual(
+                        claim.user_id, claim.draft_id, (AutoSendStop.ineligible.value,)
+                    )
+                )
+            return
+        except Exception as exc:  # no automatic retry: the user decides (and Send reuses the key)
+            log.error(
+                "auto_send_failed", user_id=str(claim.user_id), draft_id=str(claim.draft_id),
+                error=type(exc).__name__,
+            )  # fmt: skip
+            await self._stop_after_claim(claim, AutoSendStop.send_failed)
+            await self._card(
+                self._presenter.show_manual(
+                    claim.user_id, claim.draft_id, (AutoSendStop.send_failed.value,)
+                )
+            )
+            return
+        sent_at = result.sent_at.astimezone(ZoneInfo(claim.timezone))
+        await self._card(
+            self._presenter.show_status(
+                claim.user_id, claim.draft_id, Msg("status.sent_auto", time=f"{sent_at:%H:%M}")
+            )
+        )
+        if self._advisor is not None:
+            await self._card(self._advisor.after_decision(claim.user_id, claim.work_chat_id))
+
+    async def _stop_after_claim(self, claim: _Claimed, stop: AutoSendStop) -> bool:
+        """The draft is still pending after a claimed send did not happen: end the countdown with
+        ``stop`` so the card is an ordinary one again. False: it is no longer pending."""
+        try:
+            async with self._session_factory() as session:
+                draft = await _lock_draft(session, claim.user_id, claim.draft_id)
+                if draft is None or draft.state != DraftState.pending or draft.auto_send_stop:
+                    return False
+                draft.auto_send_stop = stop
+                await note_stopped(session, draft, stop, self._clock())
+                await session.commit()
+        except Exception as exc:
+            log.error(
+                "auto_send_stop_failed", draft_id=str(claim.draft_id), error=type(exc).__name__
+            )
+            return False
+        return True
+
+    @staticmethod
+    async def _card(update: Awaitable[None]) -> None:
+        """A card update or advisor call after the commit: one failure never blocks the others."""
+        try:
+            await update
+        except Exception as exc:
+            log.warning("auto_send_card_update_failed", error=type(exc).__name__)

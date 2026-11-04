@@ -1,5 +1,6 @@
 """Principle I, statically: ``sending/send.py`` is the only caller of ``send_text`` and is reached
-only from the review module's approve/edit path."""
+only from the review module's approve/edit path and from the auto-send step handler (specs/014),
+which passes ``auto=True`` and nothing else."""
 
 from __future__ import annotations
 
@@ -30,26 +31,50 @@ def test_send_text_only_called_from_send_module() -> None:
     assert callers == {"sending/send.py"}
 
 
-def test_send_approved_draft_only_called_from_review_approval_path() -> None:
-    assert set(_calls("send_approved_draft")) == {"telegram/control_bot/review.py"}
-    review = (SRC / "telegram/control_bot/review.py").read_text(encoding="utf-8")
-    tree = ast.parse(review)
-    owners = {
+def _owners(tree: ast.AST, name: str) -> set[str]:
+    """Names of the functions in ``tree`` that call ``name``."""
+    return {
         fn.name
         for fn in ast.walk(tree)
-        if isinstance(fn, ast.AsyncFunctionDef)
+        if isinstance(fn, ast.AsyncFunctionDef | ast.FunctionDef)
         for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == name
+    }
+
+
+def test_send_approved_draft_only_called_from_review_approval_path_and_auto_sender() -> None:
+    assert set(_calls("send_approved_draft")) == {
+        "telegram/control_bot/review.py",
+        "sending/auto_send.py",
+    }
+    review = ast.parse((SRC / "telegram/control_bot/review.py").read_text(encoding="utf-8"))
+    assert _owners(review, "send_approved_draft") == {"_approve_and_send"}
+    assert _owners(review, "_approve_and_send") == {"on_approve", "on_edit", "on_edited_text"}
+    auto = ast.parse((SRC / "sending/auto_send.py").read_text(encoding="utf-8"))
+    assert _owners(auto, "send_approved_draft") == {"_send"}
+    (call,) = (
+        node
+        for node in ast.walk(auto)
         if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "send_approved_draft"
-    }
-    assert owners == {"_approve_and_send"}
-    helper_callers = {
-        fn.name
-        for fn in ast.walk(tree)
-        if isinstance(fn, ast.AsyncFunctionDef)
-        for node in ast.walk(fn)
-        if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "_approve_and_send"
-    }
-    assert helper_callers == {"on_approve", "on_edit", "on_edited_text"}
+    )
+    keywords = {k.arg: k.value for k in call.keywords}
+    assert isinstance(keywords["auto"], ast.Constant) and keywords["auto"].value is True
+    assert "edited_text" not in keywords and "allow_outdated" not in keywords
+
+
+def test_only_the_auto_sender_sets_auto_approved_at() -> None:
+    """The user's approval column is written by the review callbacks, the automatic one only by
+    the auto-send step handler."""
+    writers: dict[str, set[str]] = {"auto_approved_at": set(), "approved_by_user_at": set()}
+    for path in SRC.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign):
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute) and target.attr in writers:
+                        writers[target.attr].add(path.relative_to(SRC).as_posix())
+    assert writers["auto_approved_at"] == {"sending/auto_send.py"}
+    assert "sending/auto_send.py" not in writers["approved_by_user_at"]
 
 
 def test_scheduler_never_imports_sending() -> None:

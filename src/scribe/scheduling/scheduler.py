@@ -1,6 +1,6 @@
 """PostgreSQL-polling scheduler (research R4, contracts/internal-interfaces.md).
 
-Every ``tick_s`` seconds a tick runs five steps in order, each in its own transaction with
+Every ``tick_s`` seconds a tick runs these steps in order, each in its own transaction with
 ``SELECT ... FOR UPDATE SKIP LOCKED``. The row locks keep the steps consistent with the rest of
 this process, but they do not make a second instance safe: per-chat ordering uses process-local
 locks (``intake/locks.py``) and a second process would start Telegram clients from the same
@@ -17,6 +17,12 @@ an advisory lock (``scribe.instance_lock``, #60).
    ids *outside* any transaction, as a background task (ticks keep running). Claims repeat in
    batches of ``batch_size`` within one tick until nothing is due or ``max_in_flight_turns``
    claimed turns are being handled, so a burst of due turns is read within one tick (SC-009).
+1b. auto-sends (specs/014): pending drafts whose cancel window has ended
+   (``auto_send_due_at <= now``) and whose countdown is still running, with a posted card
+   (``control_message_id IS NOT NULL``). The handler (``AutoSender``) re-checks eligibility under
+   the locks, then either approves the draft for sending (``auto_approved_at``) or stops the
+   countdown; the send itself runs after the commit, outside the scheduler. A step without a
+   handler claims nothing.
 2. reminders: pending drafts with ``remind_at <= now AND reminded_at IS NULL``.
 3. expiries: pending drafts with ``expires_at <= now``.
    Steps 2 and 3 call their handler with the locked rows inside the step's transaction; the
@@ -31,7 +37,9 @@ an advisory lock (``scribe.instance_lock``, #60).
    instead of a period later.
 
 A step with no registered handler does nothing (it does not claim rows). User stories plug in
-their handlers; nothing in the scheduler can send a reply (Principle I).
+their handlers. The scheduler itself never imports the sending module: the one step that leads to
+a send (1b) only hands the locked rows to its registered handler, which is gated by the opt-in
+checks of ``AutoSender`` (Principle I).
 
 :class:`DueTurnsProcessor` is the step-1 handler (US1, US2): it marks the claimed turns' chats
 read up to each turn's last message (``read_concurrency`` at a time) and returns, so reading
@@ -216,6 +224,7 @@ class Scheduler:
         self._stuck_reading = timedelta(seconds=stuck_reading_s)
         self._claimed: set[uuid.UUID] = set()  # handed to the step-1 handler, not yet returned
         self._due_turns_handler: DueTurnsHandler | None = None
+        self._auto_sends_handler: DraftStepHandler | None = None
         self._reminders_handler: DraftStepHandler | None = None
         self._expiries_handler: DraftStepHandler | None = None
         self._jobs: dict[str, Job] = {}
@@ -227,6 +236,9 @@ class Scheduler:
 
     def on_due_turns(self, handler: DueTurnsHandler) -> None:
         self._due_turns_handler = handler
+
+    def on_auto_sends(self, handler: DraftStepHandler) -> None:
+        self._auto_sends_handler = handler
 
     def on_reminders(self, handler: DraftStepHandler) -> None:
         self._reminders_handler = handler
@@ -272,11 +284,12 @@ class Scheduler:
         log.info("scheduler_stopped")
 
     async def tick(self, *, drain: bool = False) -> None:
-        """Run the four steps once. ``drain`` waits for each step's background work before the
+        """Run the steps once. ``drain`` waits for each step's background work before the
         next step starts (tests on a single shared connection); production ticks never wait."""
         for name, step in (
             ("stuck_turns", self._step_stuck_turns),
             ("due_turns", self._step_due_turns),
+            ("auto_sends", self._step_auto_sends),
             ("reminders", self._step_reminders),
             ("expiries", self._step_expiries),
             ("jobs", self._step_jobs),
@@ -393,6 +406,18 @@ class Scheduler:
         finally:
             self._turns_in_flight -= len(turn_ids)
             self._claimed.difference_update(turn_ids)
+
+    async def _step_auto_sends(self) -> None:
+        if self._auto_sends_handler is None:
+            return
+        await self._draft_step(
+            self._auto_sends_handler,
+            Draft.auto_send_due_at <= self._clock(),
+            Draft.auto_send_stop.is_(None),
+            Draft.auto_approved_at.is_(None),
+            Draft.outdated.is_(False),
+            Draft.control_message_id.is_not(None),  # no countdown without a posted card (A4a)
+        )
 
     async def _step_reminders(self) -> None:
         if self._reminders_handler is None:

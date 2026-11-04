@@ -70,7 +70,10 @@ Callbacks:
 ``wacct:<on|off|cancel>``, ``chatspage:<n>``, ``wxopen:0``,
 ``setlang:<en|ru>``, ``chatcfg:<chat_id>``, ``chatdelay:<chat_id>[:clear]``,
 ``chatlang:<chat_id>[:clear]``, ``chatformal:<chat_id>:<1-5|clear>``,
-``chatenable:<chat_id>:<on|off>``, ``chatskip:<chat_id>:<inherit|off|on>``, ``chatadd:0`` (with
+``chatenable:<chat_id>:<on|off>``, ``chatskip:<chat_id>:<inherit|off|on>``,
+``chatauto:<chat_id>:<on|off>`` (specs/014: the chat screen's auto-send line; ``on`` only asks
+for the confirmation of ``auto_send_flow.py``, ``off`` takes effect at once and stops the chat's
+running countdowns), ``chatadd:0`` (with
 the picker's ``pickchat:`` / ``pickpage:`` / ``pickdone:``, ``chat_picker.py``); the legacy
 ``chatgroup:<chat_id>:<mentions_only|always>`` of old settings cards only answers "no longer
 available" (006). Callbacks act
@@ -105,6 +108,8 @@ from scribe.db.models import (
     MAX_DELAY_S,
     ActivityKind,
     ActivityRecord,
+    AutoSendSource,
+    AutoSendStop,
     ChatKind,
     Contact,
     ConversationTurn,
@@ -117,8 +122,10 @@ from scribe.db.models import (
     WorkChatOrigin,
 )
 from scribe.db.repos import chats as chats_repo
+from scribe.db.repos import decisions as decisions_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
+from scribe.db.repos.decisions import ChatRate
 from scribe.i18n import (
     LANGUAGES,
     Lang,
@@ -134,6 +141,7 @@ from scribe.i18n import (
 )
 from scribe.intake.waiting import replan_waiting_turns
 from scribe.logging import get_logger
+from scribe.sending.auto_send import OFFER_WINDOW, set_chat_auto_send
 from scribe.style.grammatical_gender import GRAMMATICAL_GENDERS
 from scribe.telegram.control_bot import (
     account_command,
@@ -147,6 +155,7 @@ from scribe.telegram.control_bot import (
     skipped,
     tasks_command,
 )
+from scribe.telegram.control_bot.auto_send_flow import confirm_keyboard, confirm_text
 from scribe.telegram.control_bot.grammatical_gender import (
     FROM_SETTINGS,
     GENDER_ACTION,
@@ -467,7 +476,9 @@ def language_keyboard(current: str) -> InlineKeyboardMarkup:
     )
 
 
-def chat_settings_text(chat: WorkChat, user: User) -> str:
+def chat_settings_text(chat: WorkChat, user: User, auto_rate: ChatRate | None = None) -> str:
+    """The chat screen. ``auto_rate``: the chat's decisions of the last 30 days for the
+    auto-send line (specs/014 FR-019); ``None``: none yet."""
     lang = user.language
     if chat.override_delay_min_s is not None and chat.override_delay_max_s is not None:
         delay = delay_label(chat.override_delay_min_s, chat.override_delay_max_s, lang)
@@ -495,11 +506,29 @@ def chat_settings_text(chat: WorkChat, user: User) -> str:
         lines.append(t("settings.chat_group", lang))  # 006: one rule, nothing to choose
     skip = chat_skip_choice(chat.skip_closing, user.skip_closing, lang)
     lines.append(t("settings.chat_skip", lang, value=skip))  # 004 FR-014
+    lines.append(_auto_send_line(chat, auto_rate or ChatRate(0, 0), lang))  # specs/014
     if _work_account_screen(chat, user.work_account):
         lines.append(t(f"settings.chat_origin.{_origin_state(chat)}", lang))
     else:
         lines.append(t("settings.chat_enabled" if chat.enabled else "settings.chat_disabled", lang))
     return "\n".join(lines)
+
+
+def _auto_send_line(chat: WorkChat, rate: ChatRate, lang: str) -> str:
+    state = t("chat.auto_send_state.on" if chat.auto_send else "chat.auto_send_state.off", lang)
+    if rate.total == 0:
+        return t("chat.auto_send_no_data", lang, state=state)
+    return t("chat.auto_send", lang, state=state, unchanged=rate.unchanged, total=rate.total)
+
+
+async def chat_rate(
+    session_factory: async_sessionmaker[AsyncSession], chat: WorkChat, now: datetime
+) -> ChatRate:
+    """The chat's unchanged / total decisions of the last 30 days (its auto-send line)."""
+    async with session_factory() as session:
+        return await decisions_repo.chat_rate(
+            session, user_id=chat.user_id, work_chat_id=chat.id, since=now - OFFER_WINDOW
+        )
 
 
 def _work_account_screen(chat: WorkChat, work_account: bool) -> bool:
@@ -538,6 +567,14 @@ def chat_settings_keyboard(
     rows = [row, language, formality]
     # 004: Skip thanks/bye — Global / Always draft / Skip.
     rows.append(chat_skip_buttons("chatskip", chat.id, chat.skip_closing, global_skip, lang))
+    if chat.auto_send:  # specs/014: turning off is one tap; turning on asks first
+        rows.append(
+            [button(t("btn.chat_auto_send_off", lang), format_callback("chatauto", chat.id, "off"))]
+        )
+    elif chat.enabled and not chat.excluded:
+        rows.append(
+            [button(t("btn.chat_auto_send_on", lang), format_callback("chatauto", chat.id, "on"))]
+        )
     if _work_account_screen(chat, work_account):
         if chats_repo.is_excluded(chat):
             label, value = "btn.chat_include", "on"
@@ -1282,6 +1319,7 @@ async def chat_settings_callback(
     user: User | None,
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
+    clock: Clock = utcnow,
 ) -> None:
     owned = await _owned_chat(callback, user, session_factory, lang)
     if owned is None:
@@ -1290,7 +1328,7 @@ async def chat_settings_callback(
     await callback.answer()
     await bot.send_message(
         current.telegram_control_chat_id,
-        chat_settings_text(chat, current),
+        chat_settings_text(chat, current, await chat_rate(session_factory, chat, clock())),
         reply_markup=chat_settings_keyboard(
             chat,
             current.language,
@@ -1307,6 +1345,7 @@ async def chat_delay_callback(
     user: User | None,
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
+    clock: Clock = utcnow,
 ) -> None:
     owned = await _owned_chat(callback, user, session_factory, lang)
     if owned is None:
@@ -1322,7 +1361,10 @@ async def chat_delay_callback(
         await callback.answer(t("alert.global_delay", lang))
         if stored is not None:
             await bot.send_message(
-                current.telegram_control_chat_id, chat_settings_text(stored, current)
+                current.telegram_control_chat_id,
+                chat_settings_text(
+                    stored, current, await chat_rate(session_factory, stored, clock())
+                ),
             )
         return
     await state.set_state(SettingsStates.chat_delay)
@@ -1336,6 +1378,7 @@ async def chat_delay_input(
     state: FSMContext,
     user: User | None,
     session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock = utcnow,
 ) -> None:
     data = await state.get_data()
     if user is None:
@@ -1361,13 +1404,18 @@ async def chat_delay_input(
         current = await users_repo.get_user(session, user.id) or user
         await session.commit()
     log.info("chat_delay_override_set", user_id=str(user.id))
+    rate = await chat_rate(session_factory, chat, clock())
     await message.answer(
-        t("settings.saved", current.language, settings=chat_settings_text(chat, current))
+        t("settings.saved", current.language, settings=chat_settings_text(chat, current, rate))
     )
 
 
 async def _send_chat_settings(
-    bot: Bot, session_factory: async_sessionmaker[AsyncSession], user: User, chat_id: uuid.UUID
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    chat_id: uuid.UUID,
+    clock: Clock = utcnow,
 ) -> None:
     async with session_factory() as session:
         chat = await chats_repo.get_work_chat(session, user.id, chat_id)
@@ -1375,7 +1423,7 @@ async def _send_chat_settings(
     if chat is not None:
         await bot.send_message(
             current.telegram_control_chat_id,
-            chat_settings_text(chat, current),
+            chat_settings_text(chat, current, await chat_rate(session_factory, chat, clock())),
             reply_markup=chat_settings_keyboard(
                 chat,
                 current.language,
@@ -1467,6 +1515,9 @@ async def chat_option_callback(
     if action == "chatgroup":
         await callback.answer(t("alert.option_removed", lang))
         return
+    if action == "chatauto":
+        await _auto_send_callback(callback, bot, current, chat, extra, session_factory, clock)
+        return
     if action == "chatenable" and _work_account_screen(chat, current.work_account):
         await _exclude_or_include(callback, bot, current, chat, extra, session_factory, clock)
         return
@@ -1480,7 +1531,7 @@ async def chat_option_callback(
         for draft_id in dropped_drafts:
             await presenter.show_status(current.id, draft_id, CHAT_DISABLED_STATUS)
         await callback.answer(t("alert.saved_check", lang))
-        await _send_chat_settings(bot, session_factory, current, chat.id)
+        await _send_chat_settings(bot, session_factory, current, chat.id, clock)
         return
     async with session_factory() as session:
         stored = await chats_repo.get_work_chat(session, current.id, chat.id)
@@ -1501,7 +1552,52 @@ async def chat_option_callback(
         await session.commit()
     log.info("chat_override_set", user_id=str(current.id), field=action)
     await callback.answer(t("alert.saved_check", lang))
-    await _send_chat_settings(bot, session_factory, current, chat.id)
+    await _send_chat_settings(bot, session_factory, current, chat.id, clock)
+
+
+async def _auto_send_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User,
+    chat: WorkChat,
+    extra: str | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+) -> None:
+    """specs/014 ``chatauto:<id>:<on|off>``. ``on`` changes nothing yet: it asks for the
+    confirmation (one chat, ``auto_send_flow.py``). ``off`` is immediate for this one chat: the
+    running countdowns of the chat stop and their cards lose the countdown."""
+    lang = user.language
+    if extra == "on":
+        if not chat.enabled or chat.excluded:
+            await callback.answer(t("autosend.chat_not_active", lang))
+            return
+        await callback.answer()
+        if not chat.auto_send:
+            await bot.send_message(
+                user.telegram_control_chat_id,
+                confirm_text(chat, user),
+                reply_markup=confirm_keyboard(chat.id, AutoSendSource.manual, lang),
+            )
+        return
+    if extra != "off":
+        await callback.answer()
+        return
+    async with session_factory() as session:
+        stopped = await set_chat_auto_send(
+            session,
+            user_id=user.id,
+            work_chat_id=chat.id,
+            on=False,
+            source=None,
+            now=clock(),
+        )
+        await session.commit()
+    presenter = DraftPresenter(bot, session_factory, clock=clock)
+    for draft_id in stopped:
+        await presenter.show_manual(user.id, draft_id, (AutoSendStop.disabled.value,))
+    await callback.answer(t("alert.saved_check", lang))
+    await _send_chat_settings(bot, session_factory, user, chat.id, clock)
 
 
 async def _exclude_or_include(
@@ -1538,7 +1634,7 @@ async def _exclude_or_include(
         return
     log.info("chat_override_set", user_id=str(user.id), field="chatenable")
     await callback.answer(t("alert.saved_check", lang))
-    await _send_chat_settings(bot, session_factory, user, chat.id)
+    await _send_chat_settings(bot, session_factory, user, chat.id, clock)
 
 
 async def disable_chat(
@@ -1885,6 +1981,7 @@ def create_router() -> Router:
     router.callback_query.register(chat_option_callback, _action("chatgroup"), idle)
     router.callback_query.register(chat_option_callback, _action("chatenable"), idle)
     router.callback_query.register(chat_option_callback, _action("chatskip"), idle)
+    router.callback_query.register(chat_option_callback, _action("chatauto"), idle)  # specs/014
     router.callback_query.register(work_account_callback, _action("wacct"), idle)  # specs/008
     router.callback_query.register(chats_page_callback, _action("chatspage"), idle)
     # T072: a callback naming another user's row stops here (applies to the included routers).

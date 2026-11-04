@@ -66,6 +66,7 @@ from scribe.retention.pending_credentials import register_pending_credentials_jo
 from scribe.retention.purge import register_purge_job
 from scribe.scheduling.deadlines import register_review_deadlines
 from scribe.scheduling.scheduler import DueTurnsProcessor, Scheduler
+from scribe.sending.auto_send import AutoSender
 from scribe.telegram.client_pool import ClientPool
 from scribe.telegram.control_bot.bot import create_bot, create_dispatcher
 from scribe.telegram.control_bot.connect_flow import (
@@ -255,6 +256,19 @@ class Service:
                 clock=self._clock,
                 read_concurrency=settings.read_concurrency,
                 compose_concurrency=settings.compose_concurrency,
+            )
+        )
+        # Step 1b (specs/014): the one step that can send without a tap, only for drafts of chats
+        # the user opted in to whose cancel window ended (AutoSender re-checks everything).
+        self.scheduler.on_auto_sends(
+            AutoSender(
+                self.session_factory,
+                self.pool,
+                presenter,
+                clock=self._clock,
+                marker=self.unread_marker,
+                commitments=self.commitments,
+                advisor=None,
             )
         )
         # Steps 2-3: one reminder, then expiry (control chat only; never sends to a contact).

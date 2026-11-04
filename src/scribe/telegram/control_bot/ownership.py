@@ -4,6 +4,9 @@
 parses ``<action>:<entity_id>[:<extra>]``; for an action that names a stored entity (a draft,
 turn, style profile, rule proposal, profile refresh, commitment or work chat) it checks that the
 row exists **and** belongs to the calling user, and otherwise answers the callback and stops.
+The specs/014 auto-send buttons are entity actions too: ``autostop`` names a draft;
+``autooffer``, ``autoconfirm``, ``autowarn`` and ``chatauto`` a work chat (``autowin:<seconds>``
+names no row and passes through).
 Handlers still load every row scoped by ``user_id``; this is the second, uniform line of defence.
 Callbacks without an entity id (``settings:delay``, ``setday:3``, ``tasks:boards``, Trello board
 ids, the Jira connect buttons ``jira`` / ``jdep`` / ``jcert``, which act on the caller's own
@@ -60,7 +63,7 @@ OwnedModel = (
 ENTITY_ACTIONS: dict[str, tuple[OwnedModel, Msg]] = {
     **{
         a: (Draft, Msg("review.not_found"))
-        for a in ("approve", "edit", "regen", "reject", "sources")
+        for a in ("approve", "edit", "regen", "reject", "sources", "autostop")
     },
     "readnow": (ConversationTurn, Msg("review.turn_not_waiting")),
     "draftany": (ConversationTurn, Msg("alert.not_found")),  # 004 /skipped
@@ -84,6 +87,10 @@ ENTITY_ACTIONS: dict[str, tuple[OwnedModel, Msg]] = {
             "chatgroup",  # legacy (006): stale buttons still get the ownership check
             "chatenable",
             "chatskip",
+            "chatauto",  # specs/014
+            "autooffer",
+            "autoconfirm",
+            "autowarn",
         )
     },
 }
