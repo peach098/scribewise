@@ -7,7 +7,9 @@ flags) and scores the drafts:
 - groundedness: share of drafts whose sources are all valid, that cite every expected source,
   mention every ``must_mention`` fact and contain no unsupported fact;
 - unsupported_facts: total count of ``must_not_claim`` hits plus numbers in the draft text that
-  appear nowhere in the context (placeholders excluded);
+  appear nowhere in the context (placeholders excluded); a phrase that is negated, followed by a
+  placeholder or part of an indirect question ("what the passport number is needed for?") is
+  not a hit (:func:`claims`);
 - flag recall: share of ``expected_flags`` the draft raised (needs_info, creates_commitment,
   sensitive[:category], tone_shift:<kind>);
 - conflict recall (SC-006): share of ``expected_conflicts`` (task / commitment ids) listed in
@@ -447,10 +449,28 @@ def _refused(text: str, start: int, end: int) -> bool:
     return _NEGATION.search(window) is not None or _NEGATION.search(after) is not None
 
 
+# An indirect question asks, it states nothing: "Could you confirm what the passport number is
+# needed for?" names no passport number. Only a wh-word right before the phrase (an article or
+# possessive between them) inside a sentence that ends with "?" counts.
+_WH_BEFORE = re.compile(
+    r"(?<!\w)(?:what|why|which|how|where|when)(?:\s+(?:the|a|an|my|your|his|her|their|our))?\s*$"
+)
+_SENTENCE_END = re.compile(r"[.!?\n]")
+
+
+def _asked(text: str, start: int, end: int) -> bool:
+    """True when the occurrence ``text[start:end]`` sits in an indirect question."""
+    if _WH_BEFORE.search(text[:start]) is None:
+        return False
+    rest = _SENTENCE_END.search(text, end)
+    return rest is not None and rest.group() == "?"
+
+
 def claims(text: str, needle: str) -> bool:
-    """``_has`` for ``must_not_claim``: some occurrence of an alternative is neither negated
+    """``_has`` for ``must_not_claim``: some occurrence of an alternative is neither negated,
     nor followed by a placeholder ("my passport number is [[passport number]]" states
-    nothing: the user fills it in or not)."""
+    nothing: the user fills it in or not), nor part of an indirect question ("could you
+    confirm what the passport number is needed for?")."""
     lowered = text.lower()
     for alt in (a.strip().lower() for a in needle.split("|")):
         if not alt:
@@ -459,7 +479,11 @@ def claims(text: str, needle: str) -> bool:
         while start != -1:
             end = start + len(alt)
             placeholder = lowered[end:].lstrip(" :").startswith("[[")
-            if not placeholder and not _refused(lowered, start, end):
+            if (
+                not placeholder
+                and not _refused(lowered, start, end)
+                and not _asked(lowered, start, end)
+            ):
                 return True
             start = lowered.find(alt, start + 1)
     return False
