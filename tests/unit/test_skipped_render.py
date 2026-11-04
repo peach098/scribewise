@@ -125,6 +125,22 @@ def test_forwarded_items_have_no_per_chat_skip_button() -> None:
     assert "   Reason: forwarded message" in text.split("\n")
 
 
+def test_informational_and_rule_skips_have_reason_labels_and_chat_buttons() -> None:
+    """013: both are setting-dependent (they disappear when skipping is off for the chat), so
+    their rows keep the per-chat switch; "draft anyway" works as for any skip."""
+    items = [_item(0, reason="informational"), _item(1, reason="user_rule")]
+    for lang, labels in (
+        ("en", ["   Reason: informational message", "   Reason: by your rule"]),
+        ("ru", ["   Причина: информационное сообщение", "   Причина: по вашему правилу"]),
+    ):
+        text = render_skipped_list(items, total=2, page=0, global_on=True, days=7, lang=lang)
+        assert all(label in text.split("\n") for label in labels)
+    data = _callbacks(skipped_keyboard(items, page=0, pages=1, global_on=True, lang="en"))
+    for item in items:
+        assert f"draftany:{item.turn_id}" in data
+        assert f"skipchat:{item.work_chat_id}:off" in data
+
+
 def test_skipped_pager_only_with_more_than_one_page() -> None:
     items = [_item(i) for i in range(10)]
     first = _callbacks(skipped_keyboard(items, page=0, pages=2, global_on=True, lang="en"))

@@ -90,7 +90,7 @@ async def test_the_user_block_is_not_part_of_the_cached_profile_prefix(
     )
     (call,) = fake_llm.calls_for("compose.draft")
     stable = [b.name for b in call.user_blocks if b.stable]
-    assert stable == ["profile"]
+    assert stable == ["profile", "user_rules"]  # the user's own rules: specs/013
 
 
 def test_only_two_values() -> None:

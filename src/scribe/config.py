@@ -141,7 +141,7 @@ class Settings(BaseSettings):
     work_account_import_max_chats: int = Field(default=50, ge=0)
 
     # --- reply gate: skip messages that need no reply (specs/004-skip-closing-messages) -----
-    skip_candidate_max_words: int = Field(default=15, ge=1)  # pre-gate word limit
+    skip_candidate_max_chars: int = Field(default=2000, ge=1)  # pre-gate length limit (013)
     skip_min_confidence: float = Field(default=0.8, ge=0, le=1)  # classifier confidence to skip
     skip_context_messages: int = Field(default=8, ge=0)  # history messages for the classifier
     skip_habit_window: int = Field(default=5, ge=1)  # past closing turns examined (research R3)

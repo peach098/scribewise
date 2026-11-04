@@ -68,6 +68,7 @@ def reply_needed_output(
     category: str = "none",
     confidence: float = 0.95,
     resolves_pending: bool = False,
+    decided_by: str = "default",
 ) -> ReplyNeededOutput:
     return ReplyNeededOutput.model_validate(
         {
@@ -75,6 +76,7 @@ def reply_needed_output(
             "category": category,
             "confidence": confidence,
             "resolves_pending": resolves_pending,
+            "decided_by": decided_by,
         }
     )
 

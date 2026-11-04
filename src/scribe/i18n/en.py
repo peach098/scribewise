@@ -724,7 +724,11 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
         "neutral, polite and concise default until more of your messages are available."
     ),
     "profile.rules_prompt": (
-        "Send a rule to add it (e.g. never use emojis), “-2” to remove rule 2, or /done to finish."
+        "Send a rule to add it (e.g. never use emojis), “-2” to remove rule 2, or /done to "
+        "finish.\n"
+        "Rules can describe what I do, not only how I write: “don't promise deadlines, write "
+        "'I'll take a look'”, “don't reply to announcements”, “always prepare a draft for "
+        "Anna”."
     ),
     "profile.rebuild_confirm": (
         "🔄 Rebuild re-reads your own messages of the last 6 months in your enabled work chats and "
@@ -1211,6 +1215,8 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "skipped.reason.farewell": "goodbye",
     "skipped.reason.acknowledgment": "acknowledgment",
     "skipped.reason.forwarded": "forwarded message",
+    "skipped.reason.informational": "informational message",
+    "skipped.reason.user_rule": "by your rule",
     "skipped.drafting": "✍️ Drafting…",
     "skipped.replied": "— you already replied",
     "skipchats.title": "⚙️ Skip thanks/bye per chat",

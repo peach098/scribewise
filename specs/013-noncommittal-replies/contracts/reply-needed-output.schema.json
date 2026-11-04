@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scribe/reply-needed-output.schema.json",
+  "title": "ReplyNeededOutput",
+  "description": "Structured output of the classify.reply_needed route, prompt v4 (013). Supersedes specs/004-skip-closing-messages/contracts/reply-needed-output.schema.json; tests/contract/test_reply_needed_schema.py points here after 013.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["reply_needed", "category", "confidence", "resolves_pending", "decided_by"],
+  "properties": {
+    "reply_needed": {
+      "type": "boolean",
+      "description": "True when the user would answer: a question, request or instruction to the user, news that affects the user and calls for a reaction, disagreement, a greeting that opens a conversation, or a user rule that asks to draft this turn."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["thanks", "farewell", "acknowledgment", "informational", "none"],
+      "description": "What the turn mainly is when it needs no reply; 'informational' when it only shares news, a status, an announcement, a document, a link or reference data and asks nothing; 'none' otherwise."
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Confidence in reply_needed."
+    },
+    "resolves_pending": {
+      "type": "boolean",
+      "description": "Only meaningful when pending_draft is true: the turn withdraws the earlier request. False otherwise."
+    },
+    "decided_by": {
+      "type": "string",
+      "enum": ["default", "user_rule"],
+      "description": "'user_rule' when a rule in the user_rules block settled reply_needed (in either direction); 'default' when the built-in rules did."
+    }
+  }
+}

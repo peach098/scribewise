@@ -309,3 +309,18 @@ Not recommended:
 - The Anthropic prices come from the repo price table and the claude-api reference (cached 2026-10-06); they agree with each other.
 
 Sources: [DeepSeek Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing), [DeepSeek Context Caching](https://api-docs.deepseek.com/guides/kv_cache), [DeepSeek Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode), [DeepSeek Change Log](https://api-docs.deepseek.com/updates), [DeepSeek API docs home](https://api-docs.deepseek.com/). Anthropic: the claude-api skill's `shared/prompt-caching.md` and model/pricing table (cached 2026-10-06).
+
+## 9. Changed by 013
+
+[specs/013-noncommittal-replies](../013-noncommittal-replies/) widens the reply gate's pre-gate
+(no word limit, no media exclusion, 2000 chars; a `?` turn is a candidate when the user has
+rules), so the classifier is asked for more turns than the ~30% of F11/§5 (`reply_gate.py`
+`is_skip_candidate`). The `classify` volume in `cost_model.py` (`vol["classify"] = 10` per day,
+from the old candidate share) is therefore a lower bound.
+
+Measured on the 013 eval set (DeepSeek, 2026-11-03): with the new pre-gate 91% of the reply-gate
+cases reach the classifier (candidate share 0.908), at $0.00007 per `deepseek-flash` call
+(p50 1.1 s). The eval set is built from skip candidates, so this is not the production share;
+the worst case (every turn classified, about 3× today's `vol["classify"]`) adds about $0.002 per
+user per day, below the model's ±40% uncertainty, so `cost_model.py` is left as is. Recalibrate
+`vol["classify"]` from production `llm_call` logs after release.

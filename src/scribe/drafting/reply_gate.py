@@ -1,11 +1,14 @@
 """Reply gate: does a due turn need a reply at all? (specs/004-skip-closing-messages,
-contracts/reply-gate.md, research R1-R3)
+specs/013-noncommittal-replies, contracts/reply-gate.md, research R1-R5)
 
     turn -> only forwarded messages? skip as ``forwarded`` (issue #47; no model call, any setting)
-         -> pre-gate (is_skip_candidate: short, no '?', no media; no I/O)
-         -> LLMRouter.classify_reply_needed (candidates only; small model)
-         -> skip only on a confident "no reply needed" with a closing category,
-            unless the user usually answers such messages in this chat (habit rule, R3)
+         -> pre-gate (is_skip_candidate: not empty, not very long, no '?' unless the user has
+            rules; no I/O)
+         -> LLMRouter.classify_reply_needed (candidates only; small model; sees the user's rules)
+         -> a confident user-rule decision stands, in either direction (013), else
+            skip only on a confident "no reply needed" with a category (a closing, or an
+            informational message), unless the user usually answers such messages in this
+            chat (habit rule, R3)
 
 Every failure or doubt drafts: a missed reply is worse than an extra draft (FR-004).
 
@@ -30,7 +33,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Literal, TypedDict
+from typing import Any, Literal, TypedDict
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -60,13 +63,15 @@ from scribe.llm.provider import (
 )
 from scribe.llm.registry import LLMRouter, RoutedResult
 from scribe.logging import get_logger
+from scribe.style.profiles import effective_user_rules, select_profile
 
 log = get_logger("scribe.reply_gate")
 
-SkipCategory = Literal["thanks", "farewell", "acknowledgment", "forwarded", "budget"]
-DecisionSource = Literal["pregate", "model", "fallback", "habit", "disabled", "user"]
+SkipCategory = Literal[
+    "thanks", "farewell", "acknowledgment", "informational", "user_rule", "forwarded", "budget"
+]
+DecisionSource = Literal["pregate", "model", "fallback", "habit", "disabled", "user", "rule"]
 
-CANDIDATE_MAX_CHARS = 160
 QUESTION_MARKS = ("?", "？")
 DEFAULT_HABIT_MIN_REPLIES = 3
 
@@ -85,6 +90,11 @@ class GateDecision:
     # ``turns.last_message_id`` the decision saw: a skip is stored only while it is unchanged,
     # so a message that joined the turn meanwhile is never skipped with it.
     last_message_id: uuid.UUID | None = None
+    # 013: whether the classifier settled it by a user rule or by the built-in rules, and
+    # whether the user had rules at all when it was asked (logged and stored in the activity
+    # record; never the rules' text).
+    decided_by: Literal["default", "user_rule"] = "default"
+    has_rules: bool = False
 
 
 FALLBACK = GateDecision("draft", "fallback", None, None)
@@ -123,17 +133,17 @@ def own_messages(messages: Sequence[models.Message]) -> list[models.Message]:
 # --- database-free core -------------------------------------------------------------------------
 
 
-def is_skip_candidate(texts: Sequence[str], *, has_media: bool, max_words: int) -> bool:
-    """Pure pre-gate: ≤ max_words words, ≤ 160 chars, no '?' / '？', no media.
+def is_skip_candidate(texts: Sequence[str], *, has_rules: bool, max_chars: int) -> bool:
+    """Pure pre-gate: not empty, ≤ ``max_chars`` chars; a '?' / '？' disqualifies only when the
+    user has no rules (``has_rules`` False): with rules, a question may be one a rule says to
+    skip or to answer. Media does not disqualify (a captioned document is informational).
 
     It can only widen drafting: a turn that is not a candidate is drafted without asking the
     classifier. An empty turn is not a candidate either (the composer handles it)."""
     joined = " ".join(t.strip() for t in texts if t.strip())
-    if has_media or not joined:
+    if not joined or len(joined) > max_chars:
         return False
-    if any(mark in joined for mark in QUESTION_MARKS):
-        return False
-    return len(joined.split()) <= max_words and len(joined) <= CANDIDATE_MAX_CHARS
+    return has_rules or not any(mark in joined for mark in QUESTION_MARKS)
 
 
 async def no_habit() -> int:
@@ -149,24 +159,28 @@ async def decide(
     draft_anyway: bool,
     habit_replied: Callable[[], Awaitable[int]],
     min_confidence: float,
-    max_words: int,
+    max_chars: int,
     has_media: bool = False,
     habit_min_replies: int = DEFAULT_HABIT_MIN_REPLIES,
     user_id: uuid.UUID | None = None,
 ) -> GateDecision:
     """Order: draft_anyway -> ("draft","user"); not enabled -> ("draft","disabled");
     not a candidate -> ("draft","pregate"); classifier error -> ("draft","fallback");
-    reply_needed -> ("draft","model"); no closing category or confidence < min ->
-    ("draft","fallback"); habit_replied() >= habit_min_replies -> ("draft","habit");
-    else ("skip","model").
+    ``decided_by`` user_rule (honoured only when ``req.user_rules`` holds rules) and
+    reply_needed -> ("draft","rule"); user_rule, not reply_needed, confidence >= min ->
+    ("skip","rule","user_rule"); user_rule with lower confidence -> ("draft","fallback");
+    reply_needed -> ("draft","model"); no category or confidence < min -> ("draft","fallback");
+    habit_replied() >= habit_min_replies -> ("draft","habit"); else ("skip","model") with the
+    classifier's category (a closing or ``informational``).
 
-    ``has_media`` and the pre-gate look at the contact's own messages only: forwarded items
-    (``forwarded: true``) are left out (issue #47). A turn of forwarded messages only never
-    gets here: :func:`forwards_only_skip` decides it first.
+    The pre-gate looks at the contact's own messages only: forwarded items (``forwarded:
+    true``) are left out (issue #47). A turn of forwarded messages only never gets here:
+    :func:`forwards_only_skip` decides it first. ``has_media`` is not used by the pre-gate
+    any more (the classifier sees each item's own ``has_media``); it is kept for callers.
 
-    ``habit_replied`` is awaited only when the classifier would skip. Never touches the
-    database or the gateway; raises only what is not a ``ProviderError`` (the caller treats
-    that as ``fallback``).
+    ``habit_replied`` is awaited only when the classifier would skip by the built-in rules; a
+    rule skip never consults it. Never touches the database or the gateway; raises only what is
+    not a ``ProviderError`` (the caller treats that as ``fallback``).
     """
     if draft_anyway:
         return GateDecision("draft", "user", None, None)
@@ -174,29 +188,47 @@ async def decide(
         return GateDecision("draft", "disabled", None, None)
     # #47: forwarded text is not the contact's own words; it never makes a turn a closing.
     texts = [m.text for m in req.incoming_messages if not m.forwarded]
-    if not is_skip_candidate(texts, has_media=has_media, max_words=max_words):
-        return GateDecision("draft", "pregate", None, None)
+    has_rules = bool(req.user_rules.get("rules"))
+    if not is_skip_candidate(texts, has_rules=has_rules, max_chars=max_chars):
+        return GateDecision("draft", "pregate", None, None, has_rules=has_rules)
     try:
         routed = await router.classify_reply_needed(req, user_id=user_id)
     except ProviderError:
-        return FALLBACK
+        return replace(FALLBACK, has_rules=has_rules)
     output = routed.output
     category: SkipCategory | None = None if output.category == "none" else output.category
+    # A model that names a rule when there are none is not believed.
+    decided_by = output.decided_by if has_rules else "default"
 
-    def draft(source: DecisionSource) -> GateDecision:
+    def decision(
+        kind: Literal["draft", "skip"],
+        source: DecisionSource,
+        skip_category: SkipCategory | None = category,
+    ) -> GateDecision:
         return GateDecision(
-            "draft", source, category, output.confidence, output.resolves_pending, routed
+            kind,
+            source,
+            skip_category,
+            output.confidence,
+            output.resolves_pending,
+            routed,
+            decided_by=decided_by,
+            has_rules=has_rules,
         )
 
+    if decided_by == "user_rule":
+        if output.reply_needed:
+            return decision("draft", "rule")
+        if output.confidence < min_confidence:
+            return decision("draft", "fallback")
+        return decision("skip", "rule", "user_rule")  # never consults the habit rule
     if output.reply_needed:
-        return draft("model")
+        return decision("draft", "model")
     if category is None or output.confidence < min_confidence:
-        return draft("fallback")  # a skip needs a confident closing category
+        return decision("draft", "fallback")  # a skip needs a confident category
     if await habit_replied() >= habit_min_replies:
-        return draft("habit")
-    return GateDecision(
-        "skip", "model", category, output.confidence, output.resolves_pending, routed
-    )
+        return decision("draft", "habit")
+    return decision("skip", "model")
 
 
 # --- service ------------------------------------------------------------------------------------
@@ -266,8 +298,8 @@ class ReplyGate:
         ``dropped`` by ``manual_reply`` with no category). Changes nothing else; never raises."""
         try:
             decision = await self._decide_dropped(user_id, turn_id)
-            if decision is None or decision.category is None:
-                return
+            if decision is None or decision.category is None or decision.source == "rule":
+                return  # a rule's decision never feeds the habit rule (013)
             async with self._session_factory() as session:
                 stored = await turns_repo.set_dropped_category(
                     session, user_id, turn_id, models.SkipCategory(decision.category)
@@ -332,12 +364,20 @@ class ReplyGate:
             if chat is None or contact is None:
                 raise LookupError("chat or contact not found")
             enabled = chat.skip_closing if chat.skip_closing is not None else user.skip_closing
+            # Rules are read only when the classifier can be asked: not after "draft anyway"
+            # or with skipping off for the chat (those paths stay as they were, FR-008a).
+            rules = (
+                await _user_rules(session, user_id, contact.id, lang=user.language)
+                if enabled and turn.draft_anyway_at is None
+                else {}
+            )
             names = _SenderNames(session, user_id)
             incoming = [
                 MessageItem(
                     id=message_ref(m.id),
                     sender=await names.of(m.sender_contact_id),
                     text=m.text,
+                    has_media=m.has_media,
                     **forward_fields(m),
                 )
                 for m in in_turn
@@ -355,6 +395,7 @@ class ReplyGate:
                 else []
             )
         request = ReplyNeededRequest(
+            user_rules=rules,
             incoming_messages=incoming,
             history=history,
             contact=ContactInfo(display_name=contact.display_name, kind=contact.kind.value),
@@ -380,7 +421,7 @@ class ReplyGate:
             draft_anyway=turn.draft_anyway_at is not None,
             habit_replied=habit_replied,
             min_confidence=settings.skip_min_confidence,
-            max_words=settings.skip_candidate_max_words,
+            max_chars=settings.skip_candidate_max_chars,
             has_media=any(m.has_media for m in own_messages(in_turn)),
             habit_min_replies=settings.skip_habit_min_replies,
             user_id=user_id,
@@ -407,8 +448,11 @@ class ReplyGate:
             texts = [m.text for m in own_messages(in_turn)]
             if is_forwards_only(in_turn):
                 return None  # not a closing: the habit rule does not count it (#47)
-            if not enabled or not is_skip_candidate(
-                texts, has_media=has_media, max_words=settings.skip_candidate_max_words
+            if not enabled:
+                return None
+            rules = await _user_rules(session, user_id, contact.id, lang=user.language)
+            if not is_skip_candidate(
+                texts, has_rules=bool(rules), max_chars=settings.skip_candidate_max_chars
             ):
                 return None  # no classifier call: the habit rule only counts closings
             names = _SenderNames(session, user_id)
@@ -417,6 +461,7 @@ class ReplyGate:
                     id=message_ref(m.id),
                     sender=await names.of(m.sender_contact_id),
                     text=m.text,
+                    has_media=m.has_media,
                     **forward_fields(m),
                 )
                 for m in in_turn
@@ -425,6 +470,7 @@ class ReplyGate:
                 session, user_id, turn.work_chat_id, before=in_turn[0].sent_at, names=names
             )
         request = ReplyNeededRequest(
+            user_rules=rules,
             incoming_messages=incoming,
             history=history,
             contact=ContactInfo(display_name=contact.display_name, kind=contact.kind.value),
@@ -437,7 +483,7 @@ class ReplyGate:
             draft_anyway=False,
             habit_replied=no_habit,
             min_confidence=settings.skip_min_confidence,
-            max_words=settings.skip_candidate_max_words,
+            max_chars=settings.skip_candidate_max_chars,
             has_media=has_media,
             habit_min_replies=settings.skip_habit_min_replies,
             user_id=user_id,
@@ -466,12 +512,18 @@ class ReplyGate:
             if contact is None:
                 raise LookupError("contact not found")
             enabled = chat.skip_closing if chat.skip_closing is not None else user.skip_closing
+            rules = (
+                await _user_rules(session, user_id, contact.id, lang=user.language)
+                if enabled
+                else {}
+            )
             names = _SenderNames(session, user_id)
             incoming = [
                 MessageItem(
                     id=message_ref(message.id),
                     sender=await names.of(message.sender_contact_id),
                     text=message.text,
+                    has_media=message.has_media,
                     **forward_fields(message),
                 )
             ]
@@ -479,6 +531,7 @@ class ReplyGate:
                 session, user_id, message.work_chat_id, before=message.sent_at, names=names
             )
         request = ReplyNeededRequest(
+            user_rules=rules,
             incoming_messages=incoming,
             history=history,
             contact=ContactInfo(display_name=contact.display_name, kind=contact.kind.value),
@@ -491,7 +544,7 @@ class ReplyGate:
             draft_anyway=False,
             habit_replied=no_habit,
             min_confidence=settings.skip_min_confidence,
-            max_words=settings.skip_candidate_max_words,
+            max_chars=settings.skip_candidate_max_chars,
             has_media=message.has_media and not message.is_forwarded,
             habit_min_replies=settings.skip_habit_min_replies,
             user_id=user_id,
@@ -549,6 +602,8 @@ class ReplyGate:
             category=decision.category,
             source=decision.source,
             confidence=decision.confidence,
+            decided_by=decision.decided_by,
+            has_rules=decision.has_rules,
             route=routed.route if routed is not None else None,
             provider=routed.provider if routed is not None else None,
             model=routed.model if routed is not None else None,
@@ -601,10 +656,22 @@ async def record_skip(
                     "category": decision.category,
                     "source": decision.source,
                     "confidence": decision.confidence,
+                    "decided_by": decision.decided_by,
+                    "has_rules": decision.has_rules,
                 },
             )
         await session.commit()
     return changed
+
+
+async def _user_rules(
+    session: AsyncSession, user_id: uuid.UUID, contact_id: uuid.UUID, *, lang: str
+) -> dict[str, Any]:
+    """The user's effective rules for this contact, as the drafting call gets them (the same
+    resolver as the composer), or ``{}`` when there are none."""
+    profile = await select_profile(session, user_id, contact_id)
+    applied = await effective_user_rules(session, user_id, profile, lang=lang)
+    return applied.user_rules_json() if applied.own or applied.inherited else {}
 
 
 class _SenderNames:

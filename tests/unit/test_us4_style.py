@@ -223,19 +223,21 @@ def test_rule_identity_by_the_label_shown_in_the_users_language() -> None:
 
 
 def test_profile_context_carries_the_resolved_rules() -> None:
+    """The profile block holds the learned style only; the resolved user rules go in their own
+    block (specs/013)."""
     contact = _style_profile(ProfileScope.contact, "reply in English")
-    context = profile_context(
-        contact, resolve_user_rules(contact, _rules("never use emojis"), lang="en")
-    )
-    assert [(r["text"], r["scope"]) for r in context.user_rules_json["rules"]] == [
+    context = profile_context(contact)
+    assert "user_rules_json" not in context.model_dump()
+    rules = resolve_user_rules(contact, _rules("never use emojis"), lang="en").user_rules_json()
+    assert [(r["text"], r["scope"]) for r in rules["rules"]] == [
         ("never use emojis", "global"),
         ("reply in English", "contact"),
     ]
     assert context.rules_json == {"formality": 3} and context.examples == ["Synthetic example"]
     global_ = _style_profile(ProfileScope.global_, "never use emojis")
-    assert profile_context(
-        global_, resolve_user_rules(global_, {}, lang="en")
-    ).user_rules_json == _rules("never use emojis")
+    assert resolve_user_rules(global_, {}, lang="en").user_rules_json() == _rules(
+        "never use emojis"
+    )
 
 
 def test_rules_lines_show_inherited_global_rules_read_only() -> None:

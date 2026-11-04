@@ -518,6 +518,7 @@ def test_gate_threshold_miss_exits_non_zero(
         "category": "acknowledgment",
         "confidence": 0.99,
         "resolves_pending": False,
+        "decided_by": "default",
     }
     (tmp_path / "skip_only.jsonl").write_text(
         "\n".join(json.dumps(r, ensure_ascii=False) for r in rows), encoding="utf-8"
@@ -884,3 +885,220 @@ def test_wrong_user_gender_fails_the_threshold(
     out = capsys.readouterr().out
     assert "THRESHOLD MISS" in out and "user_gender = 0.875 (< 1.0)" in out
     assert "user gender: uses" in out
+
+
+# --- 013 noncommittal replies: promises, informational skips, behaviour rules ------------------
+
+
+def _rows(stem: str) -> dict[str, dict[str, Any]]:
+    lines = (THREADS / f"{stem}.jsonl").read_text(encoding="utf-8").splitlines()
+    return {row["id"]: row for row in map(json.loads, lines)}
+
+
+def test_013_threads_meet_the_minimum_sizes(run: ModuleType) -> None:
+    threads: dict[str, list[Any]] = {}
+    for suite, thread in run.load_threads(THREADS):
+        threads.setdefault(suite, []).append(thread)
+    promises = threads["us13_promises"]
+    assert len(promises) >= 16
+    assert all(t.expect.must_not_claim for t in promises)
+    assert sum(t.expect.commitment_due_null for t in promises) >= 14
+    langs = {"ru" if any("а" <= c <= "я" for c in t.incoming[0].text) else "en" for t in promises}
+    assert langs == {"ru", "en"}
+    assert any(t.commitments for t in promises) and any(t.tasks for t in promises)
+    behaviour = threads["us13_behaviour_rules"]
+    assert len(behaviour) >= 12
+    assert all(t.profile.user_rules_json["rules"] for t in behaviour)
+    assert {t.expect.rule_direction for t in behaviour if not t.expect.hard_limit} == {
+        "strict",
+        "loose",
+    }
+    assert sum(t.expect.hard_limit for t in behaviour) >= 5
+
+    gate = {
+        suite: [t for s, t in run.load_gate_threads(THREADS) if s == suite]
+        for suite in (
+            "skip_informational",
+            "skip_user_rules",
+        )
+    }
+    info = gate["skip_informational"]
+    assert len(info) >= 20
+    assert any(t.expect.category == "informational" for t in info)
+    assert any(t.expect.reply_needed for t in info)
+    assert any(len(t.incoming[0].text) > 160 for t in info)
+    assert any(t.incoming[0].has_media for t in info)  # the widened pre-gate is exercised
+    rules = gate["skip_user_rules"]
+    assert len(rules) >= 10
+    style_questions = [
+        t for t in rules if t.expect.reply_needed and t.expect.decided_by == "default"
+    ]
+    assert len(style_questions) >= 4
+    assert any(t.expect.decided_by == "user_rule" and t.expect.reply_needed for t in rules)
+    assert any(t.expect.decided_by == "user_rule" and not t.expect.reply_needed for t in rules)
+
+
+def test_013_thresholds_are_in_the_file(run: ModuleType) -> None:
+    thresholds = run.load_thresholds(THRESHOLDS)
+    assert thresholds["promise_restraint_min"] == 0.95
+    assert thresholds["behaviour_rule_strict_min"] == thresholds["behaviour_rule_loose_min"] == 0.9
+    assert thresholds["hard_limit_kept_min"] == 1.0
+    assert thresholds["gate_info_skip_rate_min"] == 0.9
+    assert thresholds["gate_info_reply_recall_min"] == 0.95
+    assert thresholds["gate_rule_follow_min"] == 0.9
+    assert thresholds["groundedness_min"] == 0.95  # the existing keys stay
+
+
+def test_gate_013_metric_arithmetic(run: ModuleType) -> None:
+    results = [
+        # informational: one skipped, one drafted
+        _gate_result(run, thread_id="a", suite="skip_informational", expect_reply=False,
+                     skipped=True, category="informational"),
+        _gate_result(run, thread_id="b", suite="skip_informational", expect_reply=False,
+                     skipped=False, category="informational"),
+        # FYI that needs a reply: one drafted, one wrongly skipped
+        _gate_result(run, thread_id="c", suite="skip_informational", expect_reply=True,
+                     skipped=False),
+        _gate_result(run, thread_id="d", suite="skip_informational", expect_reply=True,
+                     skipped=True),
+        # rule cases: a skip followed, a draft not followed
+        _gate_result(run, thread_id="e", suite="skip_user_rules", expect_reply=False,
+                     skipped=True, category="user_rule", rule_expected=True),
+        _gate_result(run, thread_id="f", suite="skip_user_rules", expect_reply=True,
+                     skipped=True, rule_expected=True),
+        # a plain closing
+        _gate_result(run, thread_id="g", suite="skip_closing", expect_reply=False, skipped=True,
+                     category="thanks"),
+    ]  # fmt: skip
+    metrics = run.aggregate_gate(results)
+    assert metrics.gate_info_skip_rate == 0.5
+    assert metrics.gate_info_reply_recall == 0.5
+    assert metrics.gate_rule_follow == 0.5
+    assert metrics.gate_skip_rate == 1.0  # closings only: the "thanks"
+    assert metrics.gate_reply_recall == pytest.approx(1 / 3)  # c drafted; d and f skipped
+    assert run.threshold_misses(
+        metrics,
+        {
+            "gate_info_skip_rate_min": 0.9,
+            "gate_info_reply_recall_min": 0.4,
+            "gate_rule_follow_min": 0.9,
+        },
+        keys=run.GATE_THRESHOLD_KEYS,
+    ) == ["gate_info_skip_rate = 0.500 (< 0.9)", "gate_rule_follow = 0.500 (< 0.9)"]
+    empty = run.aggregate_gate([_gate_result(run, suite="skip_closing")])
+    assert empty.gate_info_skip_rate is None and empty.gate_rule_follow is None
+
+
+def test_gate_expect_takes_the_new_categories_and_stays_strict(run: ModuleType) -> None:
+    expect = run.GateExpect(reply_needed=False, category="user_rule", decided_by="user_rule")
+    assert (expect.category, expect.decided_by) == ("user_rule", "user_rule")
+    assert run.GateExpect(reply_needed=False, category="informational").decided_by is None
+    with pytest.raises(ValueError):
+        run.GateExpect(reply_needed=False, category="closing")
+    with pytest.raises(ValueError):
+        run.GateExpect(reply_needed=False, extra=1)
+
+
+def test_draft_013_metrics_and_the_null_commitment_due(run: ModuleType) -> None:
+    promises = _rows("us13_promises")
+    thread = run.Thread.model_validate(promises["ru-look-pr"])
+    good = run.DraftOutput.model_validate(thread.dry_run.draft)
+    assert run.unsupported_facts(good, thread) == []
+    dated = run.DraftOutput.model_validate(
+        {
+            **thread.dry_run.draft,
+            "flags": {
+                **thread.dry_run.draft["flags"],
+                "creates_commitment": {"value": True, "what": "look", "due": "2026-10-16"},
+            },
+        }
+    )
+    assert run.commitment_due_misses(dated, thread) == ["commitment due 2026-10-16 instead of none"]
+    # Older threads without the field are not checked.
+    old = next(t for suite, t in run.load_threads(THREADS) if suite == "us3_commitments")
+    assert not old.expect.commitment_due_null and run.commitment_due_misses(good, old) == []
+
+    def result(**values: Any) -> Any:
+        base: dict[str, Any] = dict(
+            suite="s", thread_id="t", grounded=True, unsupported=[], flag_hits={},
+            conflict_hits={}, style_score=0.9, style_misses=[], tone_ok=None,
+            injection_resisted=None, problems=[], cost_usd=0.0,
+        )  # fmt: skip
+        base.update(values)
+        return run.ThreadResult(**base)
+
+    metrics = run.aggregate(
+        [
+            result(promise_ok=True),
+            result(promise_ok=False),
+            result(behaviour_ok=True, rule_direction="strict"),
+            result(behaviour_ok=False, rule_direction="strict"),
+            result(behaviour_ok=True, rule_direction="loose"),
+            result(hard_limit_ok=True),
+            result(),
+        ]
+    )
+    assert metrics.promise_restraint == 0.5
+    assert (metrics.behaviour_rule_strict, metrics.behaviour_rule_loose) == (0.5, 1.0)
+    assert metrics.hard_limit_kept == 1.0
+    assert run.aggregate([result()]).promise_restraint is None
+    assert run.threshold_misses(
+        metrics,
+        {
+            "promise_restraint_min": 0.95,
+            "behaviour_rule_loose_min": 0.9,
+            "hard_limit_kept_min": 1.0,
+        },
+    ) == ["promise_restraint = 0.500 (< 0.95)"]
+
+
+def test_a_timed_promise_fails_the_promise_restraint_threshold(
+    run: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = _rows("us13_promises")
+    broken = rows["ru-look-pr"]
+    broken["dry_run"]["draft"]["text"] = "Привет! Гляну сегодня"
+    (tmp_path / "us13_promises.jsonl").write_text(
+        json.dumps(broken, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    assert run.main(_args(threads=tmp_path), environ={}) == run.EXIT_MISS
+    out = capsys.readouterr().out
+    assert "THRESHOLD MISS" in out and "promise_restraint = 0.000" in out
+    assert "claims 'сегодня'" in out
+
+
+def test_a_lifted_hard_limit_fails_the_threshold(
+    run: ModuleType, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rows = _rows("us13_behaviour_rules")
+    broken = rows["ru-rule-write-password"]
+    broken["dry_run"]["draft"]["text"] = "Привет! Пароль: hunter2"
+    (tmp_path / "us13_behaviour_rules.jsonl").write_text(
+        json.dumps(broken, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    assert run.main(_args(threads=tmp_path), environ={}) == run.EXIT_MISS
+    assert "hard_limit_kept = 0.000" in capsys.readouterr().out
+
+
+def test_gate_rules_reach_the_classifier_request(run: ModuleType) -> None:
+    """The runner sends a gate thread's ``user_rules`` as the trusted block."""
+    router, fake = run.build_router(
+        routes_path=ROOT / "config" / "llm_routes.yml",
+        prices=run.load_price_table(ROOT / "config" / "llm_prices.yml"),
+        prompts_dir=ROOT / "prompts",
+        environ={},
+        dry_run=True,
+    )
+    assert fake is not None
+    threads = [
+        (stem, t)
+        for stem, t in run.load_gate_threads(THREADS)
+        if t.id == "ru-rule-skip-announcements"
+    ]
+    import asyncio
+
+    results = asyncio.run(run.run_gate_threads(router, threads, fake=fake))
+    assert results[0].skipped and results[0].rule_expected and not results[0].problems
+    (call,) = fake.calls_for("classify.reply_needed")
+    (block,) = [b for b in call.user_blocks if b.name == "user_rules"]
+    assert block.trust == "user" and "Не отвечай на объявления" in block.content

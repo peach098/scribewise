@@ -154,3 +154,18 @@ class ReplyNeededOutput(_Output):  # mirrors reply-needed-output.schema.json
 confidence, route, provider, model, prompt_version, latency_ms, cost_usd` (`turn_id` for a
 turn, `message_id` with `pending=true` for the pending-draft check). It never includes message
 text.
+
+## Changed by 013
+
+[specs/013-noncommittal-replies/contracts/reply-gate.md](../../013-noncommittal-replies/contracts/reply-gate.md)
+extends this contract; where they differ, 013 wins:
+
+- The pre-gate no longer looks at words, media or a fixed 160-char limit:
+  `is_skip_candidate(texts, *, has_rules, max_chars)` accepts any non-empty turn of at most
+  `skip_candidate_max_chars` (2000) chars; a `?` disqualifies it only when the user has no rules.
+  `skip_candidate_max_words` is gone.
+- `SkipCategory` gains `informational` and `user_rule`; `DecisionSource` gains `rule`.
+- The classifier output has the required field `decided_by` (`default` | `user_rule`); a
+  confident rule decision is taken before the habit rule and never consults it.
+- The gate request carries the user's rules (`user_rules`, `trust="user"`) and each message's
+  `has_media`.

@@ -12,7 +12,7 @@ Send these in your bot chat. The same list is in the bot's menu and in `/help`.
 | `/profile` | Your style profile and its rules: edit rules, per-contact profiles (up to 20), pin, rebuild, undo the last weekly refresh |
 | `/commitments` | Promises found in your chats and Jira comments: resolve, delete, reopen |
 | `/waiting` | Messages still waiting to be read, with **👀 Read now** |
-| `/skipped` | Messages of the last 7 days that got no draft ("thanks!", "ok", forwards): **Draft anyway**, turn skipping off for everyone or one chat |
+| `/skipped` | Messages of the last 7 days that got no draft ("thanks!", "ok", forwards, plain announcements, or by one of your rules): **Draft anyway**, turn skipping off for everyone or one chat |
 | `/pause` | Stop drafting; messages stay unread |
 | `/resume` | Start drafting again |
 | `/ooo` | Set or clear an out-of-office note; drafts become out-of-office replies |

@@ -302,10 +302,11 @@ class IntakeRouter:
         if (
             self._gate is None
             or message.is_forwarded
+            # ``has_rules=True``: the widest pre-check; the gate itself knows the user's rules.
             or not is_skip_candidate(
                 [message.text],
-                has_media=message.has_media,
-                max_words=self._settings.skip_candidate_max_words,
+                has_rules=True,
+                max_chars=self._settings.skip_candidate_max_chars,
             )
         ):
             return

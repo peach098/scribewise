@@ -44,7 +44,8 @@ flowchart LR
    moved into their working hours and days. Until then the message stays unread.
 3. **Reading** (`scheduling/scheduler.py`). The scheduler polls Postgres every few seconds
    (`SELECT … FOR UPDATE SKIP LOCKED`), marks due messages read and decides whether a reply is
-   needed at all (`drafting/reply_gate.py`); closing messages like "thanks!" are skipped and
+   needed at all (`drafting/reply_gate.py`); closing messages like "thanks!", messages that
+   only inform, and messages one of the user's rules says to skip are skipped and
    listed in `/skipped`.
 4. **Drafting** (`drafting/composer.py`). The composer collects context: recent history, open
    tasks from Jira or Trello, open commitments, and, when the message refers to something

@@ -49,7 +49,7 @@ you set them.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `SCRIBE_SKIP_MIN_CONFIDENCE` | 0.8 | Classifier confidence needed to skip a message |
-| `SCRIBE_SKIP_CANDIDATE_MAX_WORDS` | 15 | Longer messages are never skipped |
+| `SCRIBE_SKIP_CANDIDATE_MAX_CHARS` | 2000 | Longer messages are never skipped |
 | `SCRIBE_SKIP_CONTEXT_MESSAGES` | 8 | Earlier messages shown to the classifier |
 | `SCRIBE_SKIP_HABIT_WINDOW` | 5 | Past closing messages checked for the user's habit |
 | `SCRIBE_SKIP_HABIT_MIN_REPLIES` | 3 | If the user answered this many of them, the next one gets a draft |
