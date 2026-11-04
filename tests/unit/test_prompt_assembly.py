@@ -250,9 +250,10 @@ def test_draft_prompt_v13_covers_tasks_commitments_conflicts_and_the_date_anchor
     placeholders to the missing piece; version 12 (issue #108) says a task's `assignees` do
     it, not necessarily the user; version 13 (specs/013): future actions default to "I'll
     look", no time or sender's date, and the user's rules arrive in their own trusted
-    `user_rules` block."""
+    `user_rules` block; version 14 (issue #8, drafts on deepseek-flash) forbids filler and
+    makes a placeholder name the missing fact."""
     prompt = PromptStore(ROOT / "prompts").get("draft")
-    assert prompt.version == "13"
+    assert prompt.version == "14"
     assert "Never say the user does a task whose `assignees` name someone else" in prompt.text
     text = prompt.text.lower()
     assert "deadline_source" in text and "deadline_note" in text
@@ -534,3 +535,15 @@ async def test_the_users_rules_are_the_only_trusted_block_in_a_request(
     rules = call.user_blocks[1].render()
     assert CANARY in rules and rules.count("</data>") == 1
     assert CANARY not in call.system
+
+
+def test_draft_prompt_v14_forbids_filler_and_names_the_missing_fact() -> None:
+    """Drafts on deepseek-flash padded replies ("Happy to help", "Let me know if…") and wrote
+    placeholders that describe a decision ("[[когда пришлю]]") or hide a fact the history
+    holds."""
+    text = PromptStore(ROOT / "prompts").get("draft").text
+    assert "No filler" in text and "Happy to help" in text and "«Буду рад помочь»" in text
+    assert "no greeting when the user's `examples`" in text
+    assert "names that missing fact" in text and "`[[номер договора]]`" in text
+    assert "not `[[когда пришлю]]`" in text and "[[secure channel or method]]" in text
+    assert "Never use a placeholder for something the\n  data blocks answer" in text

@@ -68,10 +68,11 @@ A day is a UTC day, the same day `python -m scribe.admin cost` shows. Spend is t
 a model priced at 0 never count. The soft cap must not be above the hard cap.
 
 - **Soft cap.** Drafts use the route table's `economy` tier for `compose.draft` (in the default
-  table Sonnet instead of Opus; in `llm_routes.deepseek.yml` `deepseek-flash` instead of
-  `deepseek-v4-pro`). Drafts are the main cost, and they are the only route with tiers, so the
-  other routes stay as they are. The user's own tier (`python -m scribe.admin set-tier`) is not
-  changed: the next day drafts use it again. The user is not told.
+  table Sonnet instead of Opus; `llm_routes.deepseek.yml` ships both tiers on `deepseek-flash`,
+  so there the soft cap changes nothing unless you point `economy` elsewhere). Drafts are the
+  main cost, and they are the only route with tiers, so the other routes stay as they are. The
+  user's own tier (`python -m scribe.admin set-tier`) is not changed: the next day drafts use it
+  again. The user is not told.
 - **Hard cap.** No LLM call is made for new messages: a due message is read as usual, then
   skipped without asking the reply gate and listed in `/skipped` with the reason "daily AI limit
   reached". 🔁 Regenerate, ✍️ Draft anyway and 🔄 Rebuild of the style profiles answer with an

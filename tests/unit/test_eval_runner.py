@@ -1102,3 +1102,31 @@ def test_gate_rules_reach_the_classifier_request(run: ModuleType) -> None:
     (call,) = fake.calls_for("classify.reply_needed")
     (block,) = [b for b in call.user_blocks if b.name == "user_rules"]
     assert block.trust == "user" and "Не отвечай на объявления" in block.content
+
+
+def test_verbosity_counts_padding_and_decision_placeholders(run: ModuleType) -> None:
+    """Info only: length against the user's own messages, filler and greetings the user never
+    writes, placeholders that describe a decision instead of naming the missing fact."""
+    own = ["ок, гляну", "да, в пятницу"]
+    stats = run.verbosity(
+        [
+            ("Привет! Пришлю [[когда пришлю]], если что — пиши", own),
+            ("ок, пришлю [[дата отправки]]", own),
+            ("Hi Tom, happy to help. Let me know if [[secure channel or method]] works", []),
+            ("Привет! Если что — пиши", ["Привет! Если что — пиши"]),  # the user's own habit
+        ]
+    )
+    assert stats["drafts"] == 4
+    assert stats["filler_drafts"] == 2
+    assert stats["greeting_added"] == 1  # the third has no own messages to compare with
+    assert stats["placeholders"] == 3 and stats["decision_placeholders"] == 2
+    # The user writes 2 and 3 words (median 3): 8/3, 4/3 and 5/5 (the third has no reference).
+    assert stats["over_2x_length"] == 1
+    assert stats["length_ratio_median"] == pytest.approx(4 / 3)
+
+
+def test_dry_run_json_carries_verbosity(run: ModuleType, tmp_path: Path) -> None:
+    out = tmp_path / "eval.json"
+    assert run.main(_args("--suite", "drafts", "--json", str(out))) == run.EXIT_OK
+    stats = json.loads(out.read_text(encoding="utf-8"))["current routes"]["verbosity"]
+    assert stats["drafts"] > 0 and "decision_placeholders" in stats
