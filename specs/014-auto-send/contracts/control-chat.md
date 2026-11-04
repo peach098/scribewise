@@ -94,7 +94,11 @@ existing gendered-text helper.
 Buttons: `autoconfirm:<work_chat_id>:manual` or `autoconfirm:<work_chat_id>:offer` (`Yes, turn
 on`; the extra is the source: `manual` from `/chats`, `offer` from §2), and
 `autoconfirm:<work_chat_id>:no` (`Cancel`). On yes: `auto_send = true`, `auto_send_source` from
-the extra, activity `auto_send_on`, message edited to `autosend.enabled`. The help text adds:
+the extra, activity `auto_send_on`, message edited to `autosend.enabled`. A confirmation shown
+before `work_chats.auto_send_changed_at` (older than the setting's last change, e.g. the user
+turned auto-send off meanwhile) is refused with the alert `autosend.confirm_stale` (`This
+confirmation is out of date. Turn auto-send on again from /chats.`) and its buttons are removed.
+The help text adds:
 deleting a card in the bot chat does not cancel it; use ⏹.
 
 ## 4. `/chats` per-chat screen

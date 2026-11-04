@@ -1409,6 +1409,10 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "btn.send_now": "✅ Send now",
     "btn.autostop": "⏹ Don't send automatically",
     "status.sent_auto": "✅ Sent automatically at {time}",
+    "status.auto_already_delivered": (
+        "✅ Telegram says this reply was already delivered by an earlier attempt, so it was not "
+        "sent again. Please check the chat."
+    ),
     "autosend.too_late": "Already being sent automatically",
     "autosend.reason.hard_stop": "suspicious message",
     "autosend.reason.commitment": "new promise",
@@ -1454,6 +1458,9 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     ),
     "autosend.disabled": "⏱ Auto-send is off for “{chat}”.",
     "autosend.confirm_cancelled": "Nothing was changed.",
+    "autosend.confirm_stale": (
+        "This confirmation is out of date. Turn auto-send on again from /chats."
+    ),
     "autosend.chat_not_active": "Auto-send needs an active chat: enable or include it first.",
     "chat.auto_send": "⏱ Auto-send: {state} · {unchanged} of {total} sent unchanged (30 days)",
     "chat.auto_send_no_data": "⏱ Auto-send: {state} · no decisions yet",

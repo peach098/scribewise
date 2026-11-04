@@ -29,6 +29,7 @@ Logs carry ids and codes only, never text (Principle II).
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
@@ -74,7 +75,7 @@ from scribe.sending.send import (
     send_approved_draft,
 )
 from scribe.telegram.control_bot.render import button, format_callback, keyboard
-from scribe.telegram.gateway import MessagingGateway
+from scribe.telegram.gateway import AlreadyDelivered, MessagingGateway
 from scribe.telegram.unread_mark import UnreadMarker
 
 log = get_logger("scribe.sending")
@@ -97,6 +98,12 @@ AUTO_SEND_ALLOWED_WARNINGS: frozenset[str] = frozenset()
 # A countdown that ended longer ago than this (the service was down) is not sent: the user's tap
 # on "Don't send automatically" may still be waiting in Telegram's queue (research A3).
 FIRE_GRACE = timedelta(minutes=10)
+
+# A claim (``auto_approved_at`` set, no stop) older than this whose send never finished (a restart
+# or a shutdown between the step's commit and the send) is stopped as ``send_failed`` and its card
+# becomes an ordinary one; never retried (research A3). A send in flight holds the draft row, so
+# the recovery skips it.
+FIRING_STALE_AFTER = timedelta(minutes=2)
 
 _WEAK_STYLE = "weak_style_profile"
 _OUT_OF_OFFICE = "out_of_office"
@@ -588,10 +595,11 @@ async def set_chat_auto_send(
 
 async def turn_off_everywhere(
     session: AsyncSession, *, user_id: uuid.UUID, now: datetime
-) -> list[uuid.UUID]:
+) -> tuple[int, list[uuid.UUID]]:
     """Turn auto-send off in every chat of the user at once (FR-010, SC-005): one ``auto_send_off``
-    activity record (``all: true``), every running countdown stopped. Returns the draft ids whose
-    cards must be re-rendered. Locks the chats; the caller commits."""
+    activity record (``all: true``), every running countdown stopped. Returns how many chats were
+    turned off and the draft ids whose cards must be re-rendered. Locks the chats; the caller
+    commits."""
     chats = list(
         (
             await session.execute(
@@ -606,7 +614,7 @@ async def turn_off_everywhere(
         .all()
     )
     if not chats:
-        return []
+        return 0, []
     for chat in chats:
         chat.auto_send = False
         chat.auto_send_changed_at = now
@@ -618,13 +626,14 @@ async def turn_off_everywhere(
         meta={"all": True, "reason": "user", "chats": len(chats)},
     )
     log.info("auto_send_changed", user_id=str(user_id), all=True, on=False, chats=len(chats))
-    return await stop_chat_countdowns(
+    stopped = await stop_chat_countdowns(
         session,
         user_id=user_id,
         work_chat_ids=[chat.id for chat in chats],
         reason=AutoSendStop.disabled,
         at=now,
     )
+    return len(chats), stopped
 
 
 async def count_auto_send_chats(session: AsyncSession, user_id: uuid.UUID) -> int:
@@ -732,6 +741,16 @@ class AutoSender:
         claimed: list[_Claimed] = []
         blocked: list[_Blocked] = []
         for draft in drafts:
+            if draft.auto_approved_at is not None:  # claimed earlier: recover it if stale
+                if draft.auto_send_stop is None and (
+                    now - draft.auto_approved_at >= FIRING_STALE_AFTER
+                ):
+                    draft.auto_send_stop = AutoSendStop.send_failed
+                    await note_stopped(session, draft, AutoSendStop.send_failed, now)
+                    blocked.append(
+                        _Blocked(draft.user_id, draft.id, (AutoSendStop.send_failed.value,))
+                    )
+                continue
             if draft.expires_at <= now or draft.auto_send_due_at is None:
                 continue  # the expiry step ends it
             context = await _context(session, draft, share=True)
@@ -774,12 +793,12 @@ class AutoSender:
             return None
 
         async def after_commit() -> None:
+            for claim in claimed:  # sends first: card edits and flood waits never delay them
+                await self._send(claim)
             for item in blocked:
                 await self._card(
                     self._presenter.show_manual(item.user_id, item.draft_id, item.reasons)
                 )
-            for claim in claimed:
-                await self._send(claim)
 
         return after_commit
 
@@ -796,6 +815,20 @@ class AutoSender:
                 commitments=self._commitments,
                 marker=self._marker,
             )
+        except asyncio.CancelledError:  # shutdown: the recovery stops the stale claim later
+            log.warning(
+                "auto_send_cancelled", user_id=str(claim.user_id), draft_id=str(claim.draft_id)
+            )
+            raise
+        except AlreadyDelivered:  # Telegram: an earlier attempt was delivered (#54)
+            log.info("send_already_delivered", draft_id=str(claim.draft_id))
+            await self._stop_after_claim(claim, AutoSendStop.send_failed)
+            await self._card(
+                self._presenter.show_status(
+                    claim.user_id, claim.draft_id, Msg("status.auto_already_delivered")
+                )
+            )
+            return
         except DraftOutdated:  # a message arrived after the claim: the existing outdated card
             await self._stop_after_claim(claim, AutoSendStop.outdated)
             await self._card(self._presenter.show_outdated(claim.user_id, claim.draft_id))

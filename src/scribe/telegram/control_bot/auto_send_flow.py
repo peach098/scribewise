@@ -11,8 +11,10 @@ auto-send on for one chat. ``manual`` is the confirmation shown by ``chatauto:<i
 ``/chats`` (``settings.py``), ``offer`` the one shown by the offer's "Turn on" (the advisor,
 specs/014 US2); ``no`` cancels. Nothing is changed before the user presses the yes button, and
 the callback names exactly one chat, so a single press can never turn auto-send on for more than
-one chat (FR-002). The chat must be active (``autosend.chat_not_active`` otherwise); a stale or
-repeated confirmation changes nothing more than the first.
+one chat (FR-002). The chat must be active (``autosend.chat_not_active`` otherwise); a repeated
+confirmation changes nothing more than the first, and one shown before the setting last changed
+(``work_chats.auto_send_changed_at`` later than the message date) is refused
+(``autosend.confirm_stale``) so an old button cannot undo the user's turning auto-send off.
 
 The router carries :class:`OwnershipMiddleware`, so a confirmation naming another user's chat is
 refused before the handler runs.
@@ -108,6 +110,14 @@ async def on_autoconfirm(
     async with session_factory() as session:
         before = await chats_repo.get_work_chat(session, user.id, work_chat_id)
         was_on = before is not None and before.auto_send
+        if (
+            not was_on
+            and before is not None
+            and _confirmation_is_stale(callback, before.auto_send_changed_at)
+        ):
+            await callback.answer(t("autosend.confirm_stale", lang), show_alert=True)
+            await _drop_buttons(callback, bot)
+            return
         try:
             await set_chat_auto_send(
                 session,
@@ -129,6 +139,28 @@ async def on_autoconfirm(
     await callback.answer()
     title = (chat.title if chat is not None else "") or t("common.chat", current.language)
     await _show(callback, bot, current, t("autosend.enabled", current.language, chat=title))
+
+
+def _confirmation_is_stale(callback: CallbackQuery, changed_at: datetime | None) -> bool:
+    """The setting changed after the confirmation was shown (the user turned auto-send off since):
+    the old "Yes, turn on" must not turn it back on. An inaccessible (old) message has date 0."""
+    message = callback.message
+    if message is None or changed_at is None:
+        return False
+    shown_at = message.date
+    return not isinstance(shown_at, datetime) or changed_at > shown_at
+
+
+async def _drop_buttons(callback: CallbackQuery, bot: Bot) -> None:
+    message = callback.message
+    if message is None:
+        return
+    try:
+        await bot.edit_message_reply_markup(
+            chat_id=message.chat.id, message_id=message.message_id, reply_markup=None
+        )
+    except Exception as exc:  # too old, deleted, ...
+        log.info("auto_send_confirm_edit_failed", error=type(exc).__name__)
 
 
 async def _show(

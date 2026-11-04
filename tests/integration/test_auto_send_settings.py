@@ -119,6 +119,35 @@ async def test_us1_chat_screen_offers_to_turn_auto_send_on(
     assert f"chatauto:{chat.id}:on" in callback_datas(screen.reply_markup)
 
 
+async def test_a_stale_confirmation_does_not_turn_auto_send_back_on(
+    harness: US2Harness, clock: FrozenClock, make_user: MakeUser, make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:  # fmt: skip
+    user, chat, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await _press(harness, user, f"chatauto:{chat.id}:on")  # the confirmation, shown at NOW
+    clock.advance(minutes=5)
+    await _set(
+        harness,
+        "UPDATE work_chats SET auto_send = false, auto_send_changed_at = :at",
+        at=clock(),
+    )  # the user turned it off since
+    harness.api.clear()
+    await _press(harness, user, f"autoconfirm:{chat.id}:manual")
+    assert not (await _chat(harness, chat)).auto_send
+    assert "This confirmation is out of date. Turn auto-send on again from /chats." in _popups(
+        harness
+    )
+    assert await _activities(harness, user, ActivityKind.auto_send_on) == []
+
+
+async def test_a_fresh_confirmation_still_turns_auto_send_on(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, chat, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await _confirmed_on(harness, user, chat)
+    assert (await _chat(harness, chat)).auto_send
+
+
 async def test_us1_turning_on_needs_a_confirmation_for_that_chat(
     harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
 ) -> None:
@@ -202,9 +231,9 @@ async def test_us1_inactive_chat_cannot_be_turned_on(
     )
 
 
-async def _set(harness: US2Harness, statement: str) -> None:
+async def _set(harness: US2Harness, statement: str, **params: Any) -> None:
     async with harness.session_factory() as session:
-        await session.execute(text(statement))
+        await session.execute(text(statement), params)
         await session.commit()
 
 

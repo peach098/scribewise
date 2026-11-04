@@ -4,6 +4,7 @@ only."""
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import datetime, time, timedelta
 from typing import Any
@@ -35,6 +36,7 @@ from scribe.scheduling.scheduler import Scheduler
 from scribe.sending import auto_send
 from scribe.sending.auto_send import AutoSender
 from scribe.telegram.fake_gateway import FakeMessagingGateway
+from scribe.telegram.gateway import AlreadyDelivered
 from tests.conftest import FROZEN_NOW, FrozenClock, LogCapture, MakeChat, MakeContact, MakeUser
 from tests.integration.bot_support import callback_update, text_update
 from tests.integration.us1_support import draft_output, grounded_reply, select_all_history
@@ -534,6 +536,35 @@ async def test_edit_stops_the_countdown_before_asking_for_the_text(
     await _quiet_after_window(harness, clock)
 
 
+async def test_edit_rerenders_the_card_without_the_countdown(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact,
+) -> None:  # fmt: skip
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    harness.api.clear()
+    await _press(harness, user, f"edit:{draft.id}")
+    shown = _edit_text(harness)
+    assert ARMED_LINE not in shown and STOPPED_LINE in shown
+    assert callback_datas(_last_edit(harness).reply_markup) == _ordinary_keyboard(draft.id)
+
+
+async def test_failed_regeneration_rerenders_the_card_without_the_countdown(
+    harness: US2Harness, fake_llm: FakeAdapter, make_user: MakeUser, make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:  # fmt: skip
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+
+    def broken(request: Any) -> Any:
+        raise RuntimeError("synthetic llm failure")
+
+    fake_llm.set_response("compose.draft", broken)
+    harness.api.clear()
+    await _press(harness, user, f"regen:{draft.id}")
+    assert (await _draft(harness, user)).auto_send_stop == AutoSendStop.user_action
+    shown = _edit_text(harness)
+    assert ARMED_LINE not in shown and STOPPED_LINE in shown
+    assert callback_datas(_last_edit(harness).reply_markup) == _ordinary_keyboard(draft.id)
+
+
 async def test_reject_stops_the_countdown(
     harness: US2Harness, clock: FrozenClock, make_user: MakeUser, make_chat: MakeChat,
     make_contact: MakeContact,
@@ -629,6 +660,8 @@ async def test_new_incoming_message_stops_the_countdown(
     assert stopped.outdated and stopped.auto_send_stop == AutoSendStop.outdated
     assert "⚠️ New messages arrived" in _edit_text(harness)
     assert ARMED_LINE not in _edit_text(harness)
+    (record,) = await _activities(harness, user, ActivityKind.auto_send_stopped)
+    assert record.at == clock()  # the injected clock, not the wall clock
     await _quiet_after_window(harness, clock)
 
 
@@ -750,6 +783,135 @@ async def test_failed_send_stops_the_countdown_without_a_retry(
     (call,) = gateway.send_text_calls
     assert call.random_id == failed.send_random_id
     assert (await _draft(harness, user)).state == DraftState.sent
+
+
+async def _claim_without_sending(harness: US2Harness) -> None:
+    """The step claims the draft, then the process dies: the after-commit send never runs."""
+    inner = harness.auto_sender
+
+    async def claim_only(session: AsyncSession, drafts: Any) -> None:
+        await inner(session, drafts)
+
+    harness.scheduler.on_auto_sends(claim_only)
+    harness.clock.advance(seconds=WINDOW.total_seconds())
+    await harness.tick()
+    harness.scheduler.on_auto_sends(harness.auto_sender)
+
+
+async def test_a_claim_whose_send_never_ran_is_stopped_as_send_failed_after_the_bound(
+    harness: US2Harness,
+    gateway: FakeMessagingGateway,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    await _claim_without_sending(harness)
+    claimed = await _draft(harness, user)
+    assert claimed.auto_approved_at is not None and claimed.auto_send_stop is None
+
+    clock.advance(seconds=auto_send.FIRING_STALE_AFTER.total_seconds() - 1)  # a fresh claim
+    await harness.tick()
+    assert (await _draft(harness, user)).auto_send_stop is None
+
+    clock.advance(seconds=2)
+    await harness.tick()
+    stopped = await _draft(harness, user)
+    assert stopped.state == DraftState.pending
+    assert stopped.auto_send_stop == AutoSendStop.send_failed
+    assert f"{MANUAL_LINE} sending failed" in _edit_text(harness)
+    assert callback_datas(_last_edit(harness).reply_markup) == _ordinary_keyboard(draft.id)
+    stops = await _activities(harness, user, ActivityKind.auto_send_stopped)
+    assert [r.meta_json["reason"] for r in stops] == ["send_failed"]
+    for _ in range(3):  # never retried by the recovery
+        clock.advance(minutes=5)
+        await harness.tick()
+    assert gateway.send_text_calls == [] and gateway.send_attempt_random_ids == []
+
+    await _press(harness, user, f"approve:{draft.id}")  # the user's own Send works, once
+    assert len(gateway.send_text_calls) == 1
+    sent = await _draft(harness, user)
+    assert sent.state == DraftState.sent and sent.approved_by_user_at is not None
+
+
+async def test_already_delivered_on_the_auto_path_is_not_a_failure(
+    harness: US2Harness,
+    gateway: FakeMessagingGateway,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    gateway.fail_send_with = AlreadyDelivered("delivered earlier")
+    await _run_window(harness, clock)
+    ended = await _draft(harness, user)
+    assert ended.state == DraftState.pending and ended.auto_send_stop is not None
+    assert ended.send_random_id is not None  # as on the manual path: the key is kept
+    shown = _edit_text(harness)
+    assert "already delivered" in shown and "sending failed" not in shown
+    assert MANUAL_LINE not in shown
+
+
+async def test_cancelled_send_is_reraised(
+    harness: US2Harness,
+    gateway: FakeMessagingGateway,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    await _claim_without_sending(harness)
+    gateway.fail_send_with = asyncio.CancelledError()  # type: ignore[assignment]
+    with pytest.raises(asyncio.CancelledError):
+        await harness.auto_sender._send(
+            auto_send._Claimed(user.id, draft.id, chat.id, user.timezone)
+        )
+
+
+async def test_sends_go_out_before_blocked_cards_are_edited(
+    harness: US2Harness,
+    gateway: FakeMessagingGateway,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    user2, _chat2, _contact2, _draft2 = await _drafted(harness, make_user, make_chat, make_contact)
+    await _set(harness, "UPDATE users SET state = 'paused' WHERE id = :id", id=user2.id)
+    order: list[str] = []
+    original = harness.presenter.show_manual
+    inner = gateway.send_text
+
+    async def spy(*args: Any, **kwargs: Any) -> None:
+        order.append("card")
+        await original(*args, **kwargs)
+
+    async def send_spy(*args: Any, **kwargs: Any) -> int:
+        order.append("send")
+        return await inner(*args, **kwargs)
+
+    harness.presenter.show_manual = spy  # type: ignore[method-assign]
+    gateway.send_text = send_spy  # type: ignore[method-assign]
+    await _run_window(harness, clock)
+    assert order[:2] == ["send", "card"]
+
+
+async def test_disabled_chat_stops_the_armed_countdown_instead_of_skipping(
+    harness: US2Harness,
+    gateway: FakeMessagingGateway,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact, draft = await _drafted(harness, make_user, make_chat, make_contact)
+    await _set(harness, "UPDATE work_chats SET enabled = false WHERE id = :id", id=chat.id)
+    await _run_window(harness, clock)
+    assert (await _draft(harness, user)).auto_send_stop == AutoSendStop.disabled
+    assert gateway.send_text_calls == []
 
 
 # --- the race between the tap and the countdown (research A3) -----------------------------------

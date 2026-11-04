@@ -56,6 +56,20 @@ draft (`FOR UPDATE`). The auto-send step locks the same row, so exactly one of t
 `on_edit` only opens the FSM today; it gains a short locked write that stops the countdown
 before asking for the text (FR-008).
 
+A tap that stops a running countdown also re-renders the card as an ordinary one (`stopped`
+line, no ⏹) so an abandoned edit or a failed regenerate never leaves a card that promises an
+automatic send.
+
+**Stale claims**: the step commits `auto_approved_at` and the send runs after the commit. If the
+process stops in between (restart, shutdown cancelling the task), nothing would ever set
+`auto_send_stop` and every tap would answer `autosend.too_late`. The same scheduler step
+therefore also receives drafts with `auto_approved_at` set and no stop; once the claim is older
+than `FIRING_STALE_AFTER` (2 minutes) the handler sets `auto_send_stop = send_failed`, records
+`auto_send_stopped` and re-renders the card as an ordinary one. It never retries the send; the
+user's Send reuses `send_random_id` (Telegram deduplicates). A send in flight holds the draft
+row lock, which the step skips (`SKIP LOCKED`). `AlreadyDelivered` on the automatic path ends
+the countdown the same way (`send_failed`, key kept) and the card says it was already delivered.
+
 **Rationale**: Reuses the existing lock order (draft, then turn, `send.py` docstring) and adds
 no new lock.
 

@@ -858,8 +858,7 @@ async def _auto_send_off_all(
     """``settings:auto_send_off_all`` (FR-010, SC-005): one tap turns auto-send off in every chat,
     stops every running countdown and renders the cards of those drafts as ordinary ones."""
     async with session_factory() as session:
-        chats = await count_auto_send_chats(session, user.id)
-        stopped = await turn_off_everywhere(session, user_id=user.id, now=clock())
+        chats, stopped = await turn_off_everywhere(session, user_id=user.id, now=clock())
         await session.commit()
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     for draft_id in stopped:

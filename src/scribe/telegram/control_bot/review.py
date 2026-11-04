@@ -812,6 +812,24 @@ async def _claim_card_action(
     return outcome is not None
 
 
+async def _show_stopped_card(
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    draft: Draft,
+    clock: Clock,
+) -> None:
+    """The countdown on ``draft``'s card was stopped by the user's tap: show an ordinary card
+    again, so it never says "will be sent automatically" for a draft that will not be. Never
+    raises (a card update must not break the action)."""
+    try:
+        await DraftPresenter(bot, session_factory, clock=clock).show_manual(
+            user.id, draft.id, stopped=True
+        )
+    except Exception as exc:
+        log.warning("auto_send_card_update_failed", error=type(exc).__name__)
+
+
 def _needs_confirmation(draft: Draft) -> list[str]:
     """Catalog keys of the reasons to confirm before sending."""
     output, system_warnings = draft_output_of(draft)
@@ -1095,6 +1113,7 @@ async def on_edit(
             advisor=auto_send_advisor,
         )  # fmt: skip
         return
+    was_armed = auto_send.is_armed(draft)
     if not await _claim_card_action(session_factory, user, draft, clock()):
         await state.clear()
         await callback.answer(t("autosend.too_late", lang))
@@ -1102,6 +1121,8 @@ async def on_edit(
     await state.set_state(ReviewStates.editing)
     await state.set_data({"draft_id": str(draft.id)})
     await callback.answer()
+    if was_armed:
+        await _show_stopped_card(bot, session_factory, user, draft, clock)
     await send_edit_prompt(  # the draft comes along: an input-field, copy or code-block prompt
         bot,
         settings,
@@ -1230,6 +1251,7 @@ async def on_fill_values(
             reply_to_message_id=draft.control_message_id,
         )
         return
+    was_armed = auto_send.is_armed(draft)
     if not await _claim_card_action(session_factory, user, draft, clock()):
         await message.answer(t("autosend.too_late", lang))
         return
@@ -1247,6 +1269,8 @@ async def on_fill_values(
         return
     except ValueCountMismatch:  # the draft changed between the check and the row lock
         await message.answer(t("review.expired", lang))
+        if was_armed:
+            await _show_stopped_card(message.bot, session_factory, user, draft, clock)  # type: ignore[arg-type]
         return
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, FILLED_STATUS)
@@ -1365,6 +1389,7 @@ async def on_regen(
         alert = paused_alert(user.timezone, clock()).render(lang)
         await callback.answer(alert, show_alert=True)
         return
+    was_armed = auto_send.is_armed(draft)
     if not await _claim_card_action(session_factory, user, draft, clock()):
         await callback.answer(t("autosend.too_late", lang), show_alert=True)
         return
@@ -1393,10 +1418,14 @@ async def on_regen(
     except DraftingPaused:  # the hard cap was reached meanwhile (issue #74)
         alert = paused_alert(user.timezone, clock()).render(lang)
         await bot.send_message(user.telegram_control_chat_id, alert)
+        if was_armed:  # the draft stays as it was, without its countdown
+            await _show_stopped_card(bot, session_factory, user, draft, clock)
         return
     except Exception as exc:
         log.error("regenerate_failed", draft_id=str(draft.id), error=type(exc).__name__)
         await bot.send_message(user.telegram_control_chat_id, t("review.regen_failed", lang))
+        if was_armed:
+            await _show_stopped_card(bot, session_factory, user, draft, clock)
         return
     async with session_factory() as session:
         await activity_repo.record(

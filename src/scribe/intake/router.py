@@ -654,8 +654,8 @@ class IntakeRouter:
         )
         return earliest if earliest is not None else stored
 
-    @staticmethod
     async def _flag_pending_draft(
+        self,
         session: AsyncSession,
         chat: WorkChat,
         turn_contact: Contact,
@@ -723,6 +723,7 @@ class IntakeRouter:
                 session,
                 chat.user_id,
                 ActivityKind.auto_send_stopped,
+                at=self._clock(),
                 draft_id=draft_id,
                 conversation_turn_id=turn_id,
                 meta={"reason": AutoSendStop.outdated.value},

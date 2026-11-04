@@ -1540,6 +1540,10 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "btn.send_now": "✅ Отправить сейчас",
     "btn.autostop": "⏹ Не отправлять автоматически",
     "status.sent_auto": "✅ Отправлено автоматически в {time}",
+    "status.auto_already_delivered": (
+        "✅ Telegram сообщает, что этот ответ уже был доставлен прошлой попыткой, поэтому "
+        "повторно он не отправлен. Проверьте, пожалуйста, чат."
+    ),
     "autosend.too_late": "Уже отправляется автоматически",
     "autosend.reason.hard_stop": "подозрительное сообщение",
     "autosend.reason.commitment": "новое обещание",
@@ -1586,6 +1590,9 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     ),
     "autosend.disabled": "⏱ Автоотправка для «{chat}» выключена.",
     "autosend.confirm_cancelled": "Ничего не изменено.",
+    "autosend.confirm_stale": (
+        "Это подтверждение устарело. Включите автоотправку заново в /chats."
+    ),
     "autosend.chat_not_active": "Для автоотправки чат должен быть активен: сначала включите его.",
     "chat.auto_send": "⏱ Автоотправка: {state} · без правок {unchanged} из {total} (30 дней)",
     "chat.auto_send_no_data": "⏱ Автоотправка: {state} · решений пока нет",

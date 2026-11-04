@@ -21,8 +21,9 @@ an advisory lock (``scribe.instance_lock``, #60).
    (``auto_send_due_at <= now``) and whose countdown is still running, with a posted card
    (``control_message_id IS NOT NULL``). The handler (``AutoSender``) re-checks eligibility under
    the locks, then either approves the draft for sending (``auto_approved_at``) or stops the
-   countdown; the send itself runs after the commit, outside the scheduler. A step without a
-   handler claims nothing.
+   countdown; the send itself runs after the commit, outside the scheduler. The same step hands
+   over drafts claimed earlier (``auto_approved_at`` set, no stop) so the handler can end a stale
+   claim whose send never finished. A step without a handler claims nothing.
 2. reminders: pending drafts with ``remind_at <= now AND reminded_at IS NULL``.
 3. expiries: pending drafts with ``expires_at <= now``.
    Steps 2 and 3 call their handler with the locked rows inside the step's transaction; the
@@ -77,7 +78,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from typing import Any, Protocol, runtime_checkable
 
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.clock import Clock, utcnow
@@ -412,11 +413,18 @@ class Scheduler:
             return
         await self._draft_step(
             self._auto_sends_handler,
-            Draft.auto_send_due_at <= self._clock(),
-            Draft.auto_send_stop.is_(None),
-            Draft.auto_approved_at.is_(None),
-            Draft.outdated.is_(False),
-            Draft.control_message_id.is_not(None),  # no countdown without a posted card (A4a)
+            or_(
+                and_(
+                    Draft.auto_send_due_at <= self._clock(),
+                    Draft.auto_send_stop.is_(None),
+                    Draft.auto_approved_at.is_(None),
+                    Draft.outdated.is_(False),
+                    # no countdown without a posted card (A4a)
+                    Draft.control_message_id.is_not(None),
+                ),
+                # claimed earlier, never finished: the handler recovers it once it is stale
+                and_(Draft.auto_approved_at.is_not(None), Draft.auto_send_stop.is_(None)),
+            ),
         )
 
     async def _step_reminders(self) -> None:
