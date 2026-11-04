@@ -248,7 +248,11 @@ async def test_settings_turn_on_and_off_with_confirmations(
     await _say(harness, user, "/settings")
     shown = harness.messages()[-1]
     assert t("settings.work_account.off") in shown.text
-    assert callback_datas(shown.reply_markup)[-2:] == ["settings:work_account", "settings:gender"]
+    assert callback_datas(shown.reply_markup)[-3:] == [
+        "settings:work_account",
+        "settings:gender",
+        "settings:auto_send_window",  # specs/014
+    ]
 
     await _press(harness, user, "settings:work_account")
     confirm = harness.messages()[-1]

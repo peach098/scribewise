@@ -158,12 +158,13 @@ async def test_language_switch_applies_at_once_and_persists(
     assert "⏱ Задержка чтения: 2 мин–10 мин, случайно для каждого сообщения" in saved.text
     assert "📅 Рабочие дни: Пн, Вт, Ср, Чт, Пт" in saved.text
     assert "🌐 Язык: Русский" in saved.text
-    assert _button_texts(saved.reply_markup)[-5:] == [
+    assert _button_texts(saved.reply_markup)[-6:] == [
         "🌐 Язык",
         "🔎 Выключить поиск",
         "🔵 Не отмечать непрочитанными",
         "💼 Включить рабочий аккаунт",  # specs/008
         "👤 Род в черновиках",  # issue #46
+        "⏱ Окно отмены",  # specs/014
     ]
     assert "👤 Род в черновиках: не задан (как в ваших сообщениях)" in saved.text
     (menu_update,) = harness.api.of_type(SetMyCommands)

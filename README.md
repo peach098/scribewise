@@ -9,7 +9,7 @@
 
 <p align="center">
   An AI secretary for Telegram work chats. It drafts replies in your style, checks your tasks
-  and promises, and sends nothing without your yes.
+  and promises, and sends only what you approved or what you let it send in a chat you trust.
 </p>
 
 <p align="center">
@@ -41,7 +41,8 @@ hours, and sooner or later you promise the same Friday to two people.
 
 ChatGPT can write a reply, but everyone can tell it wasn’t you. Telegram auto-responders reply on
 their own, from a script. ScribeWise does neither: it learns how *you* write, checks what you’ve
-already promised, and waits for your yes before anything goes out.
+already promised, and waits for your yes before anything goes out (unless you turned on
+auto-send for a chat).
 
 > ScribeWise is the working name; the code and the bot are called Scribe.
 
@@ -60,8 +61,15 @@ already promised, and waits for your yes before anything goes out.
   nothing changes until you accept. A weekly refresh tells you what changed, with one-tap undo.
 
 ### ✅ You stay in control
-- **Nothing is sent without your approval.** Every draft lands in your private bot chat with
-  **Send**, **Edit**, **Regenerate** and **Reject**.
+- **Nothing goes out unless you approved it, or you opted in.** By default every draft lands in
+  your private bot chat with **Send**, **Edit**, **Regenerate** and **Reject**, and nothing is
+  sent until you tap. Auto-send is off everywhere and turns on only per chat, after you confirm
+  it for that chat (Scribe may offer it once you keep sending a chat’s drafts unchanged). In such
+  a chat an eligible draft is sent after a cancel window of 1–15 minutes (2 by default), and
+  the card shows the time and a **Don’t send automatically** button. Drafts with a new promise,
+  a sensitive topic, missing details, a suspicious message, a weak style profile or a warning
+  always wait for you. `/settings` changes the window and turns auto-send off everywhere in one
+  tap.
 - **Sent as you.** Approved replies go from your own account as ordinary messages, with no
   “sent by a bot” tag.
 - **No forgotten drafts.** One reminder after 2 hours; after 24 hours the draft expires and the
@@ -122,7 +130,7 @@ sequenceDiagram
     S->>S: Checks your style, tasks, promises<br/>and earlier conversations
     S->>Y: Draft in your style + sources
     Y->>S: Send / Edit / Regenerate / Reject
-    S->>T: Sends the approved reply as you
+    S->>T: Sends the approved reply as you<br/>(or on its own in an auto-send chat, after the cancel window)
     T->>C: “Friday before lunch 👍”
 ```
 
@@ -138,8 +146,8 @@ sequenceDiagram
 | --- | :---: | :---: | :---: | :---: |
 | Style learned from your own messages | ✅ | you describe a style | rarely | ✅ |
 | Knows your tasks and promises | ✅ | — | knowledge base only | — |
-| Nothing sent without your approval | ✅ | — the bot replies | — the bot replies | ✅ |
-| Auto-send where you trust it | 🔜 | ✅ | ✅ | — |
+| Nothing sent unless you approve it or opt in per chat | ✅ | — the bot replies | — the bot replies | ✅ |
+| Auto-send where you trust it | ✅ per chat, with a cancel window | ✅ | ✅ | — |
 | Works in Telegram work chats | ✅ | ✅ | ✅ | — |
 | Runs on your own server | ✅ | — | — | Inbox Zero only |
 
@@ -147,7 +155,6 @@ sequenceDiagram
 
 ## Roadmap
 
-- 🔜 **Auto-send** for trusted chats and routine questions, when you decide
 - 🔜 **Hosted version**: no Docker and no API keys, with personal help during the beta
 
 ## Quick setup

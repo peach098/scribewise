@@ -43,11 +43,22 @@ US4: the card names the profile the draft used (the profile's own contact, or "g
 edited send, ``style.proposals.propose_after_edit`` may post a 💡 rule proposal
 (``rule_accept`` / ``rule_dismiss``, handled in ``profile_command.py``). ``OwnershipMiddleware``
 refuses a callback naming another user's draft or turn before any handler runs.
+
+specs/014 (auto-send): in a chat the user opted in to, the card of an eligible draft shows
+"will be sent automatically at HH:MM" and the keyboard of :func:`render.armed_draft_keyboard`;
+``autostop:<draft_id>`` (⏹) cancels the countdown and keeps the draft. The countdown is armed
+only here, in :meth:`DraftPresenter.post_card`, after the card was posted, in the transaction
+that stores ``control_message_id`` (``sending/auto_send.py``, research A4a). Every other card
+action (approve, edit, reject, regenerate, fill) stops the countdown first, under the draft's
+row lock; once the scheduler step has claimed the draft they answer "Already being sent
+automatically" and do nothing, so exactly one of the user and the countdown wins.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -70,9 +81,11 @@ from scribe.context.tasks.base import Deadline, Task
 from scribe.context.tasks.service import ALERTED_KEY, default_task_sources, parse_task_ref
 from scribe.db.models import (
     ActivityKind,
+    AutoSendStop,
     ConnectionStatus,
     ConversationTurn,
     Draft,
+    DraftDecisionKind,
     DraftState,
     ProfileScope,
     TurnState,
@@ -82,6 +95,7 @@ from scribe.db.models import (
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import commitments as commitments_repo
+from scribe.db.repos import decisions as decisions_repo
 from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import messages as messages_repo
 from scribe.db.repos import profiles as profiles_repo
@@ -115,6 +129,8 @@ from scribe.llm.provider import DraftOutput
 from scribe.llm.registry import LLMRouter
 from scribe.logging import get_logger
 from scribe.scheduling.deadlines import expire_draft
+from scribe.sending import auto_send
+from scribe.sending.auto_send import DecisionAdvisor
 from scribe.sending.send import (
     AccessSuspended,
     DraftOutdated,
@@ -130,6 +146,7 @@ from scribe.telegram.control_bot.render import (
     CallbackData,
     DraftCardView,
     InvalidCallbackData,
+    armed_draft_keyboard,
     button,
     confirm_send_keyboard,
     draft_keyboard,
@@ -397,8 +414,17 @@ async def conflict_labels(
 
 
 async def load_card_view(
-    session: AsyncSession, user: User, draft: Draft, *, now: datetime, status: Msg | None = None
+    session: AsyncSession,
+    user: User,
+    draft: Draft,
+    *,
+    now: datetime,
+    status: Msg | None = None,
+    auto_send_reasons: Sequence[str] = (),
+    auto_send_stopped: bool = False,
 ) -> DraftCardView:
+    """The card of ``draft``. A running countdown shows its end time; ``auto_send_reasons`` /
+    ``auto_send_stopped`` (specs/014) say why a card in an auto-send chat waits for the user."""
     lang = user.language
     turn = await turns_repo.get_turn(session, user.id, draft.conversation_turn_id)
     if turn is None:
@@ -447,6 +473,13 @@ async def load_card_view(
         status=render(status, lang) if status is not None else None,
         lang=lang,
         possibly_unnecessary=draft.possibly_unnecessary,
+        auto_send_at=(
+            _local(draft.auto_send_due_at, user.timezone)
+            if draft.auto_send_due_at is not None and auto_send.is_armed(draft)
+            else None
+        ),
+        auto_send_reasons=tuple(auto_send_reasons),
+        auto_send_stopped=auto_send_stopped,
     )
 
 
@@ -479,22 +512,74 @@ class DraftPresenter:
                     "draft_card_skipped_suspended", user_id=str(user_id), draft_id=str(draft_id)
                 )
                 return
-            view = await load_card_view(session, user, draft, now=self._clock())
+            now = self._clock()
+            # specs/014 research A4a: the card is posted with the countdown the draft would get
+            # (or the reasons it waits); nothing is armed until the post succeeded.
+            plan = await auto_send.plan_arm(session, draft_id=draft_id, now=now)
+            view = await load_card_view(session, user, draft, now=now)
+            if plan is not None:
+                view = _with_plan(view, plan, user.timezone)
             chat_id, outdated = user.telegram_control_chat_id, draft.outdated
             without_tasks = "tasks_unavailable" in draft_output_of(draft)[1]
+        planned = plan is not None and plan.planned_due_at is not None
         sent = await self._bot.send_message(
             chat_id,
             card_text(view, outdated=outdated),
-            reply_markup=card_keyboard(draft_id, outdated, view.lang),
+            reply_markup=card_keyboard(draft_id, outdated, view.lang, armed=planned),
         )
+        stored_at = self._clock()
+        armed = True
         async with self._session_factory() as session:
             await drafts_repo.update_draft(
                 session, user_id, draft_id, control_message_id=sent.message_id
             )
+            if plan is not None and planned:
+                armed = await self._commit_arm(
+                    session, user_id, draft_id, plan, sent.message_id, stored_at
+                )
             await session.commit()
         log.info("draft_card_posted", user_id=str(user_id), draft_id=str(draft_id))
+        if not armed:  # the card promised a countdown that was not started: say so (safe side)
+            await self._without_countdown(user_id, draft_id)
         if without_tasks:
             await self._alert_task_source_error(user_id, chat_id, view.lang)
+
+    @staticmethod
+    async def _commit_arm(
+        session: AsyncSession,
+        user_id: uuid.UUID,
+        draft_id: uuid.UUID,
+        plan: auto_send.ArmPlan,
+        control_message_id: int,
+        stored_at: datetime,
+    ) -> bool:
+        """Start the countdown in the transaction that stores the card; a failure only costs the
+        countdown (a savepoint keeps the card's own update)."""
+        try:
+            async with session.begin_nested():
+                return await auto_send.commit_arm(
+                    session,
+                    draft_id=draft_id,
+                    plan=plan,
+                    control_message_id=control_message_id,
+                    stored_at=stored_at,
+                )
+        except Exception as exc:
+            log.error(
+                "auto_send_arm_failed",
+                user_id=str(user_id),
+                draft_id=str(draft_id),
+                error=type(exc).__name__,
+            )
+            return False
+
+    async def _without_countdown(self, user_id: uuid.UUID, draft_id: uuid.UUID) -> None:
+        try:
+            await self.show_manual(user_id, draft_id)
+        except Exception as exc:
+            log.warning(
+                "auto_send_card_update_failed", draft_id=str(draft_id), error=type(exc).__name__
+            )
 
     async def _alert_task_source_error(self, user_id: uuid.UUID, chat_id: int, lang: str) -> None:
         """One alert when the task source turned ``error`` (cleared by a success or /tasks)."""
@@ -539,9 +624,64 @@ class DraftPresenter:
                 return
             view = await load_card_view(session, user, draft, now=self._clock())
             chat_id, message_id = user.telegram_control_chat_id, draft.control_message_id
+            outdated, armed = draft.outdated, auto_send.is_armed(draft)
+        await self._rerender(
+            user_id,
+            draft_id,
+            chat_id,
+            message_id,
+            card_text(view, outdated=outdated),
+            card_keyboard(draft_id, outdated=outdated, lang=view.lang, armed=armed),
+        )
+
+    async def show_manual(
+        self,
+        user_id: uuid.UUID,
+        draft_id: uuid.UUID,
+        reasons: Sequence[str] | None = None,
+        *,
+        stopped: bool = False,
+    ) -> None:
+        """specs/014: re-render a pending card as an ordinary one that waits for the user, with
+        the line saying why (``reasons``: ``autosend.reason`` codes; ``None``: work them out
+        now) or, with ``stopped``, that the user cancelled the countdown."""
+        async with self._session_factory() as session:
+            user = await users_repo.get_user(session, user_id)
+            draft = await drafts_repo.get_draft(session, user_id, draft_id)
+            if user is None or draft is None or draft.state != DraftState.pending:
+                return
+            if reasons is None and not stopped:
+                found = await auto_send.current_reasons(session, draft_id)
+                reasons = [r.value for r in found] or [AutoSendStop.ineligible.value]
+            view = await load_card_view(
+                session,
+                user,
+                draft,
+                now=self._clock(),
+                auto_send_reasons=tuple(reasons or ()),
+                auto_send_stopped=stopped,
+            )
+            chat_id, message_id = user.telegram_control_chat_id, draft.control_message_id
             outdated = draft.outdated
-        text = card_text(view, outdated=outdated)
-        markup = card_keyboard(draft_id, outdated=outdated, lang=view.lang)
+        await self._rerender(
+            user_id,
+            draft_id,
+            chat_id,
+            message_id,
+            card_text(view, outdated=outdated),
+            card_keyboard(draft_id, outdated=outdated, lang=view.lang),
+        )
+
+    async def _rerender(
+        self,
+        user_id: uuid.UUID,
+        draft_id: uuid.UUID,
+        chat_id: int,
+        message_id: int | None,
+        text: str,
+        markup: InlineKeyboardMarkup,
+    ) -> None:
+        """Edit the draft's card; when it cannot be edited (too old, deleted) post a new one."""
         if message_id is not None:
             try:
                 await self._bot.edit_message_text(
@@ -632,8 +772,21 @@ def outdated_keyboard(draft_id: uuid.UUID, lang: str) -> InlineKeyboardMarkup:
     )
 
 
-def card_keyboard(draft_id: uuid.UUID, outdated: bool, lang: str) -> InlineKeyboardMarkup:
-    return outdated_keyboard(draft_id, lang) if outdated else draft_keyboard(draft_id, lang)
+def card_keyboard(
+    draft_id: uuid.UUID, outdated: bool, lang: str, *, armed: bool = False
+) -> InlineKeyboardMarkup:
+    """``armed``: a countdown is running (specs/014); an outdated draft is never armed."""
+    if outdated:
+        return outdated_keyboard(draft_id, lang)
+    return armed_draft_keyboard(draft_id, lang) if armed else draft_keyboard(draft_id, lang)
+
+
+def _with_plan(view: DraftCardView, plan: auto_send.ArmPlan, timezone: str) -> DraftCardView:
+    """The card as it is posted in an auto-send chat: the planned end of the window or the
+    reasons the draft waits for the user."""
+    if plan.planned_due_at is not None:
+        return dataclasses.replace(view, auto_send_at=_local(plan.planned_due_at, timezone))
+    return dataclasses.replace(view, auto_send_reasons=tuple(r.value for r in plan.reasons))
 
 
 def outdated_prompt_keyboard(draft_id: uuid.UUID, lang: str) -> InlineKeyboardMarkup:
@@ -645,6 +798,36 @@ def outdated_prompt_keyboard(draft_id: uuid.UUID, lang: str) -> InlineKeyboardMa
 
 def _is_live(draft: Draft, now: datetime) -> bool:
     return draft.state == DraftState.pending and draft.expires_at > now
+
+
+async def _claim_card_action(
+    session_factory: async_sessionmaker[AsyncSession], user: User, draft: Draft, now: datetime
+) -> bool:
+    """specs/014 research A3: the user acts on a card, so its countdown stops, under the draft's
+    row lock. False: the scheduler step already claimed the draft and it is being sent
+    automatically; the caller answers "too late" and does nothing."""
+    outcome = await auto_send.stop_for_user(
+        session_factory, user_id=user.id, draft_id=draft.id, now=now
+    )
+    return outcome is not None
+
+
+async def _show_stopped_card(
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    user: User,
+    draft: Draft,
+    clock: Clock,
+) -> None:
+    """The countdown on ``draft``'s card was stopped by the user's tap: show an ordinary card
+    again, so it never says "will be sent automatically" for a draft that will not be. Never
+    raises (a card update must not break the action)."""
+    try:
+        await DraftPresenter(bot, session_factory, clock=clock).show_manual(
+            user.id, draft.id, stopped=True
+        )
+    except Exception as exc:
+        log.warning("auto_send_card_update_failed", error=type(exc).__name__)
 
 
 def _needs_confirmation(draft: Draft) -> list[str]:
@@ -692,6 +875,24 @@ async def _owned_draft(
     return data, draft
 
 
+async def _advise(
+    advisor: DecisionAdvisor | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: uuid.UUID,
+    draft: Draft,
+) -> None:
+    """specs/014 research A7: after a decision committed, let the advisor weigh the offer and the
+    suggestion to turn auto-send off. Nothing here can fail the action that triggered it."""
+    if advisor is None:
+        return
+    try:
+        async with session_factory() as session:
+            work_chat_id = await auto_send.work_chat_id_of(session, draft)
+        await advisor.after_decision(user_id, work_chat_id)
+    except Exception as exc:
+        log.warning("autosend_advisor_call_failed", error=type(exc).__name__)
+
+
 async def _approve_and_send(
     *,
     bot: Bot,
@@ -703,6 +904,7 @@ async def _approve_and_send(
     edited_text: str | None = None,
     allow_outdated: bool = False,
     unread_marker: UnreadMarker | None = None,
+    advisor: DecisionAdvisor | None = None,
 ) -> bool:
     """Record the explicit approval of this draft, then send through ``send.py``."""
     lang = user.language
@@ -771,6 +973,7 @@ async def _approve_and_send(
     )
     if result.edited:
         await _propose_rules(bot, user, draft.id, session_factory)
+    await _advise(advisor, session_factory, user.id, draft)
     return True
 
 
@@ -819,6 +1022,7 @@ async def on_approve(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -826,6 +1030,9 @@ async def on_approve(
     data, draft = owned
     if not _is_live(draft, clock()):
         await callback.answer(t("review.expired", lang))
+        return
+    if not await _claim_card_action(session_factory, user, draft, clock()):
+        await callback.answer(t("autosend.too_late", lang))
         return
     anyway = data.extra in (ANYWAY, ANYWAY_CONFIRM)
     if draft.outdated and not anyway:  # only "Send anyway" may send an outdated draft
@@ -862,6 +1069,7 @@ async def on_approve(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, allow_outdated=anyway, unread_marker=unread_marker,
+        advisor=auto_send_advisor,
     )  # fmt: skip
 
 
@@ -876,6 +1084,7 @@ async def on_edit(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -901,11 +1110,19 @@ async def on_edit(
         await _approve_and_send(
             bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
             clock=clock, edited_text=edited, allow_outdated=True, unread_marker=unread_marker,
+            advisor=auto_send_advisor,
         )  # fmt: skip
+        return
+    was_armed = auto_send.is_armed(draft)
+    if not await _claim_card_action(session_factory, user, draft, clock()):
+        await state.clear()
+        await callback.answer(t("autosend.too_late", lang))
         return
     await state.set_state(ReviewStates.editing)
     await state.set_data({"draft_id": str(draft.id)})
     await callback.answer()
+    if was_armed:
+        await _show_stopped_card(bot, session_factory, user, draft, clock)
     await send_edit_prompt(  # the draft comes along: an input-field, copy or code-block prompt
         bot,
         settings,
@@ -926,6 +1143,7 @@ async def on_edited_text(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     fsm = await state.get_data()
     text = await edited_text_of(bot, message.text or "")  # never saves the inline "@bot "
@@ -957,6 +1175,7 @@ async def on_edited_text(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, edited_text=text, allow_outdated=True, unread_marker=unread_marker,
+        advisor=auto_send_advisor,
     )  # fmt: skip
 
 
@@ -1032,6 +1251,10 @@ async def on_fill_values(
             reply_to_message_id=draft.control_message_id,
         )
         return
+    was_armed = auto_send.is_armed(draft)
+    if not await _claim_card_action(session_factory, user, draft, clock()):
+        await message.answer(t("autosend.too_late", lang))
+        return
     try:
         new = await store_filled_version(
             session_factory,
@@ -1046,6 +1269,8 @@ async def on_fill_values(
         return
     except ValueCountMismatch:  # the draft changed between the check and the row lock
         await message.answer(t("review.expired", lang))
+        if was_armed:
+            await _show_stopped_card(message.bot, session_factory, user, draft, clock)  # type: ignore[arg-type]
         return
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, FILLED_STATUS)
@@ -1064,6 +1289,7 @@ async def on_reject(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1089,6 +1315,20 @@ async def on_reject(
         if not _is_live(stored, now):
             await callback.answer(t("review.expired", lang))
             return
+        if auto_send.is_firing(stored):  # the countdown got there first (specs/014 research A3)
+            await callback.answer(t("autosend.too_late", lang))
+            return
+        if auto_send.stop_countdown(stored, AutoSendStop.user_action):
+            await auto_send.note_stopped(session, stored, AutoSendStop.user_action, now)
+        await decisions_repo.record(
+            session,
+            user_id=user.id,
+            work_chat_id=await auto_send.work_chat_id_of(session, stored),
+            draft_id=draft.id,
+            decision=DraftDecisionKind.rejected,
+            during_auto_send=stored.auto_send_due_at is not None,
+            at=now,
+        )
         await drafts_repo.finalize(session, user.id, draft.id, DraftState.rejected, at=now)
         await session.execute(
             update(ConversationTurn)
@@ -1111,6 +1351,7 @@ async def on_reject(
     await callback.answer(t("review.rejected", lang))
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, Msg("status.rejected"))
+    await _advise(auto_send_advisor, session_factory, user.id, draft)
 
 
 async def on_regen(
@@ -1124,6 +1365,7 @@ async def on_regen(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1146,6 +1388,10 @@ async def on_regen(
     if await paused_now(session_factory, settings, user.id, clock()):  # issue #74
         alert = paused_alert(user.timezone, clock()).render(lang)
         await callback.answer(alert, show_alert=True)
+        return
+    was_armed = auto_send.is_armed(draft)
+    if not await _claim_card_action(session_factory, user, draft, clock()):
+        await callback.answer(t("autosend.too_late", lang), show_alert=True)
         return
     await callback.answer(t("review.regenerating", lang))
     if draft.outdated:
@@ -1172,10 +1418,14 @@ async def on_regen(
     except DraftingPaused:  # the hard cap was reached meanwhile (issue #74)
         alert = paused_alert(user.timezone, clock()).render(lang)
         await bot.send_message(user.telegram_control_chat_id, alert)
+        if was_armed:  # the draft stays as it was, without its countdown
+            await _show_stopped_card(bot, session_factory, user, draft, clock)
         return
     except Exception as exc:
         log.error("regenerate_failed", draft_id=str(draft.id), error=type(exc).__name__)
         await bot.send_message(user.telegram_control_chat_id, t("review.regen_failed", lang))
+        if was_armed:
+            await _show_stopped_card(bot, session_factory, user, draft, clock)
         return
     async with session_factory() as session:
         await activity_repo.record(
@@ -1187,10 +1437,54 @@ async def on_regen(
             conversation_turn_id=new.conversation_turn_id,
             meta={"previous_draft_id": str(draft.id), "version": new.version},
         )
+        await decisions_repo.record(  # specs/014: the superseded version was not good enough
+            session,
+            user_id=user.id,
+            work_chat_id=await auto_send.work_chat_id_of(session, draft),
+            draft_id=draft.id,
+            decision=DraftDecisionKind.regenerated,
+            during_auto_send=draft.auto_send_due_at is not None,
+            at=clock(),
+        )
         await session.commit()
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, Msg("status.superseded"))
     await presenter.post_card(user.id, new.id)
+    await _advise(auto_send_advisor, session_factory, user.id, draft)
+
+
+async def on_autostop(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    lang: Lang,
+    clock: Clock = utcnow,
+    auto_send_advisor: DecisionAdvisor | None = None,
+) -> None:
+    """``autostop:<draft_id>`` (⏹ Don't send automatically, specs/014 FR-008): cancel the
+    countdown, keep the draft pending and approvable. Writes an ``auto_cancelled`` decision."""
+    owned = await _owned_draft(callback, user, session_factory, lang)
+    if owned is None or user is None:
+        return
+    _, draft = owned
+    if draft.state != DraftState.pending:
+        await callback.answer(t("review.already_handled", lang))
+        return
+    if not _is_live(draft, clock()):
+        await callback.answer(t("review.expired", lang))
+        return
+    stopped = await auto_send.stop_for_user(
+        session_factory, user_id=user.id, draft_id=draft.id, now=clock(), cancelled=True
+    )
+    if stopped is None:
+        await callback.answer(t("autosend.too_late", lang))
+        return
+    await callback.answer()
+    if stopped:
+        presenter = DraftPresenter(bot, session_factory, clock=clock)
+        await presenter.show_manual(user.id, draft.id, stopped=True)
+        await _advise(auto_send_advisor, session_factory, user.id, draft)
 
 
 async def on_sources(
@@ -1296,6 +1590,7 @@ def create_router() -> Router:
     router.callback_query.middleware(OwnershipMiddleware())
     router.callback_query.register(on_approve, _action("approve"))
     router.callback_query.register(on_edit, _action("edit"))
+    router.callback_query.register(on_autostop, _action("autostop"))
     router.callback_query.register(on_reject, _action("reject"))
     router.callback_query.register(on_regen, _action("regen"))
     router.callback_query.register(on_sources, _action("sources"))

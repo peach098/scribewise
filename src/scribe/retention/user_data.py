@@ -39,6 +39,11 @@
   deliveries (versions of the announcement, state, delivered at), and :func:`data_summary`
   counts the ones received (``sent`` or ``unknown``).
 
+- Auto-send (specs/014): the user's and chats' new columns are exported with their rows, and the
+  ``draft_decisions`` key lists what the user decided on each draft (a code, a flag, a time and
+  ids, never text); :func:`data_summary` counts them (``decisions``), and the retention job
+  deletes them 31 days after the decision.
+
 Nothing here logs content.
 """
 
@@ -68,6 +73,7 @@ from scribe.db.models import (
     Contact,
     ConversationTurn,
     Draft,
+    DraftDecision,
     Message,
     ProfileState,
     RefusedContact,
@@ -88,6 +94,7 @@ from scribe.release_notes import repo as release_notes_repo
 log = get_logger("scribe.retention")
 
 DERIVED_RETENTION = timedelta(days=30)
+DECISION_RETENTION = timedelta(days=31)  # specs/014: draft_decisions (the 30-day rate window + 1)
 EXPORT_FORMAT_VERSION = 1
 # Keyed by the person's Telegram id (= users.telegram_control_chat_id), no FK to users.
 ACCESS_TABLES: tuple[type[Any], ...] = (
@@ -114,6 +121,7 @@ PER_USER_TABLES: tuple[type[Any], ...] = (
     StyleRuleProposal,
     Commitment,
     ActivityRecord,
+    DraftDecision,  # specs/014: ids, a code and a flag per decision, no text
 )
 
 
@@ -334,6 +342,7 @@ class DataSummary:
     excluded_chats: int = 0
     release_notes: int = 0  # specs/011: release notes received (sent or unknown)
     grammatical_gender: str | None = None  # issue #46: users.grammatical_gender (None: unset)
+    decisions: TableSummary = TableSummary(0)  # specs/014: draft_decisions, removed after 31 days
 
 
 async def _count(session: AsyncSession, model: type[Any], user_id: uuid.UUID, *where: Any) -> int:
@@ -394,6 +403,7 @@ async def data_summary(
         session, Commitment.closed_at, Commitment, user_id, Commitment.closed_at.is_not(None)
     )
     oldest_activity = await _min(session, ActivityRecord.at, ActivityRecord, user_id)
+    oldest_decision = await _min(session, DraftDecision.at, DraftDecision, user_id)
     telegram = await users_repo.get_telegram_session(session, user_id)
     connection = await session.scalar(
         select(TaskSourceConnection).where(TaskSourceConnection.user_id == user_id)
@@ -449,6 +459,11 @@ async def data_summary(
             ReleaseDelivery.state.in_(RELEASE_RECEIVED_STATES),
         ),
         grammatical_gender=grammatical_gender,
+        decisions=TableSummary(
+            await _count(session, DraftDecision, user_id),
+            oldest_decision,
+            oldest_decision + DECISION_RETENTION if oldest_decision else None,
+        ),
     )
 
 

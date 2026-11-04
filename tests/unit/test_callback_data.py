@@ -72,3 +72,26 @@ def test_help_lists_every_command() -> None:
             assert f"/{name}" in text
     assert {"start", "help", "delete_my_data", "telegram", "my_data"} <= set(COMMAND_NAMES)
     assert help_text("ru").startswith("Scribe готовит черновики")
+
+
+@pytest.mark.parametrize(
+    ("action", "extra"),
+    [
+        ("autostop", None),
+        ("autooffer", "later"),
+        ("autooffer", "never"),
+        ("autoconfirm", "manual"),
+        ("autoconfirm", "offer"),
+        ("autowarn", "keep"),
+        ("chatauto", "reset"),
+        ("chatauto", "off"),
+    ],
+)
+def test_auto_send_callbacks_fit_with_a_uuid(action: str, extra: str | None) -> None:
+    data = format_callback(action, uuid.uuid4(), extra)
+    assert len(data.encode()) <= 64
+    assert parse_callback(data).action == action
+
+
+def test_auto_send_window_callback_carries_seconds() -> None:
+    assert parse_callback(format_callback("autowin", 900)) == CallbackData("autowin", "900")

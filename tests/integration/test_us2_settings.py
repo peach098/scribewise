@@ -73,6 +73,7 @@ async def test_settings_menu_validates_and_saves(
         "settings:mark_unread",  # specs/009
         "settings:work_account",  # specs/008
         "settings:gender",  # issue #46
+        "settings:auto_send_window",  # specs/014
     ]
     assert "🌐 Language: English" in menu.text
 

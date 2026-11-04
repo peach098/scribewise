@@ -399,8 +399,12 @@ NO_ENTITY_ACTIONS = {
     "skipcfg",  # 004: skipcfg:global:<on|off>, the caller's own users row
     "skippage",
     "skipchats",
+    "autowin",  # specs/014: autowin:<seconds>, the caller's own users row
     "setgender",  # issue #46: setgender:<masculine|feminine>, the caller's own users row
 }
+# specs/014: entity actions listed in ownership.py before their handlers were registered; empty now
+# that the offer and warning handlers are (kept so a future split can use it again).
+AUTO_SEND_HANDLERS_PENDING: set[str] = set()
 _ACTION_IN_FILTER = re.compile(r"^\^?([a-z_]+):")
 
 
@@ -467,12 +471,40 @@ def test_ownership_covers_every_entity_action() -> None:
     assert {"approve", "pin", "rule_accept", "cmtres", "chatenable"} <= registered
     missing = registered - NO_ENTITY_ACTIONS - set(ENTITY_ACTIONS)
     assert missing == set(), f"callback actions without an ownership check: {sorted(missing)}"
-    assert set(ENTITY_ACTIONS) <= registered  # no stale entries either
+    # No stale entries either; the offer and warning buttons are listed ahead of their handlers.
+    assert set(ENTITY_ACTIONS) - AUTO_SEND_HANDLERS_PENDING <= registered
+
+
+AUTO_SEND_ENTITY_ACTIONS = {
+    "autostop": "Draft",
+    "autooffer": "WorkChat",
+    "autoconfirm": "WorkChat",
+    "autowarn": "WorkChat",
+    "chatauto": "WorkChat",
+}
+
+
+def test_ownership_lists_every_auto_send_entity_action() -> None:
+    """specs/014: a card or chat button that is not listed would skip the ownership check."""
+    assert {a: ENTITY_ACTIONS[a][0].__name__ for a in AUTO_SEND_ENTITY_ACTIONS} == (
+        AUTO_SEND_ENTITY_ACTIONS
+    )
+    assert "autowin" not in ENTITY_ACTIONS  # autowin:<seconds> names no row
 
 
 @pytest.mark.parametrize(
     "data",
-    ["approve:", "pin:a:b:c", "chatenable::off", "undo_refresh:not-a-uuid", "cmtdel:1:2:3:4"],
+    [
+        "approve:",
+        "pin:a:b:c",
+        "chatenable::off",
+        "undo_refresh:not-a-uuid",
+        "cmtdel:1:2:3:4",
+        "autostop:",
+        "autostop:not-a-uuid",
+        "autoconfirm:::manual",
+        "chatauto:not-a-uuid:on",
+    ],
 )
 async def test_ownership_refuses_malformed_entity_callbacks(data: str) -> None:
     user = User(id=uuid.uuid4(), telegram_control_chat_id=1)

@@ -1134,3 +1134,174 @@ async def test_migration_0014_downgrade_clears_forwarded_decisions(
             await connection.execution_options(isolation_level="AUTOCOMMIT")
             await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
         await admin.dispose()
+
+
+async def test_migration_auto_send(migrated_database_url: str) -> None:
+    """specs/014: the upgrade defaults auto-send off for existing rows, the checks hold (Principle
+    I: no ``sent`` draft without an approval, no countdown without a posted card), the decisions
+    table cascades, and the downgrade removes everything and restores the old check."""
+    name = f"scribe_migration_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(migrated_database_url)
+    scratch_url = (
+        make_url(migrated_database_url).set(database=name).render_as_string(hide_password=False)
+    )
+    async with admin.connect() as connection:
+        await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.execute(text(f'CREATE DATABASE "{name}"'))
+    scratch = create_engine(scratch_url)
+    ids = {key: uuid.uuid4() for key in ("user", "chat", "contact", "turn", "draft", "turn2")}
+
+    async def exists(query: str) -> bool:
+        async with scratch.connect() as connection:
+            return bool((await connection.execute(text(query))).scalar())
+
+    async def rejected(statement: str, **params: object) -> None:
+        with pytest.raises(IntegrityError):
+            async with scratch.begin() as connection:
+                await connection.execute(text(statement), {**ids, **params})
+
+    async def accepted(statement: str, **params: object) -> None:
+        async with scratch.begin() as connection:
+            await connection.execute(text(statement), {**ids, **params})
+
+    def draft_sql(turn: str, state: str, extra: str = "", values: str = "") -> str:
+        return (
+            "INSERT INTO drafts (id, user_id, conversation_turn_id, version, output_json,"
+            " prompt_version, llm_provider, llm_model, llm_usage_json, state, prepared_at,"
+            f" remind_at, expires_at, outdated{extra}) VALUES (gen_random_uuid(), :user,"
+            f" :{turn}, 1, '{{}}', '', '', '', '{{}}', '{state}', now(), now(), now(),"
+            f" false{values})"
+        )
+
+    try:
+        _alembic(scratch_url, "upgrade", "0020")
+        await accepted(
+            "INSERT INTO users (id, telegram_control_chat_id, display_name, timezone,"
+            " working_days, work_start, work_end, delay_min_s, delay_max_s, state)"
+            " VALUES (:user, 900001401, 'x', 'UTC', '{1,2,3,4,5}', '09:00', '18:00', 0, 0,"
+            " 'active')"
+        )
+        await accepted(
+            "INSERT INTO work_chats (id, user_id, telegram_chat_id, title, kind, enabled)"
+            " VALUES (:chat, :user, 900001402, 'x', 'private', true)"
+        )
+        await accepted(
+            "INSERT INTO contacts (id, user_id, telegram_peer_id, display_name, kind,"
+            " own_message_count_6m, pinned_profile)"
+            " VALUES (:contact, :user, 900001402, 'x', 'person', 0, false)"
+        )
+        for turn in ("turn", "turn2"):
+            await accepted(
+                "INSERT INTO conversation_turns (id, user_id, work_chat_id, contact_id,"
+                " arrived_at, delay_s, due_at, state) VALUES (:id, :user, :chat, :contact,"
+                " now(), 0, now(), 'pending_review')",
+                id=ids[turn],
+            )
+        # A pending draft exists before the upgrade; the old check refuses a bare "sent".
+        await accepted(draft_sql("turn", "pending").replace("gen_random_uuid()", ":draft", 1))
+        await rejected("UPDATE drafts SET state = 'sent' WHERE id = :draft")
+
+        _alembic(scratch_url, "upgrade", "head")
+
+        async with scratch.connect() as connection:
+            chat = (
+                await connection.execute(
+                    text(
+                        "SELECT auto_send, auto_send_offer::text, auto_send_changed_at,"
+                        " auto_send_source, auto_send_offer_not_before, auto_send_warned_at"
+                        " FROM work_chats WHERE id = :chat"
+                    ),
+                    ids,
+                )
+            ).one()
+            user = (
+                await connection.execute(
+                    text(
+                        "SELECT auto_send_window_s, auto_send_last_offer_at FROM users"
+                        " WHERE id = :user"
+                    ),
+                    ids,
+                )
+            ).one()
+            draft = (
+                await connection.execute(
+                    text(
+                        "SELECT auto_send_due_at, auto_send_stop, auto_approved_at FROM drafts"
+                        " WHERE id = :draft"
+                    ),
+                    ids,
+                )
+            ).one()
+        assert tuple(chat) == (False, "none", None, None, None, None)
+        assert tuple(user) == (120, None)
+        assert tuple(draft) == (None, None, None)
+
+        for window in (59, 901):
+            await rejected("UPDATE users SET auto_send_window_s = :w WHERE id = :user", w=window)
+        await accepted("UPDATE users SET auto_send_window_s = 900 WHERE id = :user")
+        await rejected("UPDATE work_chats SET auto_send = true WHERE id = :chat")
+        await accepted(
+            "UPDATE work_chats SET auto_send = true, auto_send_source = 'offer' WHERE id = :chat"
+        )
+
+        # Principle I at the database level: a sent draft needs one of the two approvals.
+        await rejected("UPDATE drafts SET state = 'sent' WHERE id = :draft")
+        await rejected("UPDATE drafts SET auto_approved_at = now() WHERE id = :draft")
+        await rejected("UPDATE drafts SET auto_send_due_at = now() WHERE id = :draft")
+        await rejected(
+            "UPDATE drafts SET auto_send_due_at = now(), auto_approved_at = now(),"
+            " state = 'sent' WHERE id = :draft"
+        )
+        await accepted("UPDATE drafts SET control_message_id = 77 WHERE id = :draft")
+        await accepted("UPDATE drafts SET auto_send_due_at = now() WHERE id = :draft")
+        await accepted(
+            "UPDATE drafts SET auto_approved_at = now(), state = 'sent' WHERE id = :draft"
+        )
+        await accepted(draft_sql("turn2", "sent", ", approved_by_user_at", ", now()"))
+
+        decision = (
+            "INSERT INTO draft_decisions (id, user_id, work_chat_id, draft_id, decision,"
+            " during_auto_send, at) VALUES (gen_random_uuid(), :user, :chat, :draft,"
+            " 'auto_sent', true, now())"
+        )
+        await accepted(decision)
+        async with scratch.begin() as connection:
+            await connection.execute(text("DELETE FROM drafts WHERE id = :draft"), ids)
+        async with scratch.connect() as connection:
+            row = (await connection.execute(text("SELECT draft_id FROM draft_decisions"))).one()
+        assert row[0] is None  # SET NULL: the decision outlives the draft
+        async with scratch.begin() as connection:
+            await connection.execute(text("DELETE FROM users WHERE id = :user"), ids)
+        assert not await exists("SELECT count(*) > 0 FROM draft_decisions")
+
+        _alembic(scratch_url, "downgrade", "0020")
+        assert not await exists(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'draft_decisions'"
+        )
+        assert not await exists(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'drafts'"
+            " AND column_name IN ('auto_send_due_at', 'auto_send_stop', 'auto_approved_at')"
+        )
+        assert not await exists(
+            "SELECT 1 FROM information_schema.columns WHERE column_name LIKE 'auto_send%'"
+            " AND table_name IN ('users', 'work_chats')"
+        )
+        assert not await exists(
+            "SELECT 1 FROM pg_type WHERE typname IN ('auto_send_source',"
+            " 'auto_send_offer_state', 'auto_send_stop', 'draft_decision')"
+        )
+        assert await exists(
+            "SELECT pg_get_constraintdef(oid) LIKE '%approved_by_user_at%'"
+            " AND pg_get_constraintdef(oid) NOT LIKE '%auto_approved_at%' FROM pg_constraint"
+            " WHERE conname = 'ck_drafts_sent_requires_approval'"
+        )
+        _alembic(scratch_url, "upgrade", "head")
+        assert await exists(
+            "SELECT 1 FROM information_schema.tables WHERE table_name = 'draft_decisions'"
+        )
+    finally:
+        await scratch.dispose()
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await admin.dispose()

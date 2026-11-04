@@ -235,6 +235,26 @@ async def _deactivate_once(
         chat.enabled = False
         if set_excluded is not None:
             chat.excluded = set_excluded
+        if chat.auto_send:  # specs/014 FR-021: a chat that is not worked on is not auto-sent
+            chat.auto_send = False
+            chat.auto_send_changed_at = now
+            await activity_repo.record(
+                session,
+                user_id,
+                ActivityKind.auto_send_off,
+                at=now,
+                meta={
+                    "work_chat_id": str(chat.id),
+                    "reason": _auto_send_off_reason(reason, activity),
+                },
+            )
+            log.info(
+                "auto_send_changed",
+                user_id=str(user_id),
+                work_chat_id=str(chat.id),
+                on=False,
+                reason=_auto_send_off_reason(reason, activity),
+            )
         drafts = list(
             (
                 await session.execute(
@@ -317,6 +337,17 @@ async def _deactivate_once(
             raise _DraftAppeared
         await session.commit()
     return Deactivated([draft.id for draft in drafts], len(waiting_ids), True)
+
+
+def _auto_send_off_reason(
+    reason: DroppedReason, activity: tuple[ActivityKind, dict[str, Any]] | None
+) -> str:
+    """Why auto-send was switched off with the chat (the ``auto_send_off`` meta ``reason``)."""
+    if reason == DroppedReason.work_account_off:
+        return "work_account_off"
+    if activity is not None and activity[0] == ActivityKind.chat_excluded:
+        return "excluded"
+    return "chat_disabled"
 
 
 # --- exclude / include ----------------------------------------------------------------------------

@@ -29,6 +29,7 @@ the operator, and the data stays in your database.
 | A Jira or Trello token you are in the middle of connecting | encrypted | when you finish or cancel, press another button, or after 15 minutes at the latest |
 | Chat titles, contact names, your out-of-office note, Jira site and account | encrypted | when you delete your data. A chat you never picked or configured, and a contact nothing refers to any more, also 90 days after Scribe last saw a message there |
 | Activity log for `/history` (no message content) | plain text | when you delete your data |
+| What you decided on each draft, for the auto-send offer (`draft_decisions`: ids, the kind of decision, a time; no message content) | plain text | 31 days after the decision, or when you delete your data |
 | Daily LLM usage and cost per user (no message content; for the operator, not in `/my_data`) | plain text | after 90 days (`SCRIBE_LLM_SPEND_RETENTION_DAYS`) or when you delete your data |
 
 Encryption is AES-256-GCM in the application, with a fresh random nonce for every value, under
