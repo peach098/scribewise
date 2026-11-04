@@ -1398,4 +1398,96 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "spend_alert.p95_skipped": "No percentile: fewer than {min} users spent anything.",
     "spend_alert.soft": "Reached the soft cap ({cap}, drafts on the economy tier):",
     "spend_alert.hard": "Reached the hard cap ({cap}, drafting paused):",
+    # --- specs/014 auto-send ---
+    "card.auto_send_at": "⏱ Will be sent automatically at {time}",
+    "card.auto_send_manual": "✋ Needs your approval: {reasons}",
+    "card.auto_send_stopped": "⏹ Automatic sending cancelled",
+    "btn.send_now": "✅ Send now",
+    "btn.autostop": "⏹ Don't send automatically",
+    "status.sent_auto": "✅ Sent automatically at {time}",
+    "autosend.too_late": "Already being sent automatically",
+    "autosend.reason.hard_stop": "suspicious message",
+    "autosend.reason.commitment": "new promise",
+    "autosend.reason.sensitive": "sensitive topic",
+    "autosend.reason.placeholders": "needs details",
+    "autosend.reason.dates_differ": "dates differ",
+    "autosend.reason.conflict": "conflicts with a task or promise",
+    "autosend.reason.weak_style": "style not learned yet",
+    "autosend.reason.out_of_office": "out of office",
+    "autosend.reason.warning": "warning on the draft",
+    "autosend.reason.no_output": "draft details unavailable",
+    "autosend.reason.outdated": "new messages",
+    "autosend.reason.chat_off": "auto-send is off for this chat",
+    "autosend.reason.outside_hours": "outside your working hours",
+    "autosend.reason.suspended": "access ended",
+    "autosend.reason.paused": "paused",
+    "autosend.reason.not_first_version": "you're already working on this draft",
+    "autosend.reason.possibly_unnecessary": "reply may not be needed",
+    "autosend.reason.user_action": "you stopped it",
+    "autosend.reason.disabled": "auto-send was turned off",
+    "autosend.reason.ineligible": "the draft needs a look",
+    "autosend.reason.send_failed": "sending failed",
+    "autosend.offer": (
+        "In “{chat}” you sent {unchanged} of {total} drafts unchanged in the last 30 days. "
+        "Send drafts in this chat automatically? You'll still see each one and can stop it "
+        "within {window}."
+    ),
+    "btn.autosend_offer_on": "Turn on",
+    "btn.autosend_offer_later": "Not now",
+    "btn.autosend_offer_never": "Don't offer for this chat",
+    "autosend.offer_later": "OK, I won't ask about this chat for a month.",
+    "autosend.offer_never": "OK, I won't offer auto-send for this chat again.",
+    "autosend.confirm": (
+        "Auto-send for “{chat}”: drafts without warnings will be sent from your account "
+        "{window} after they appear here, unless you stop them. Drafts with promises, sensitive "
+        "topics, missing details or suspicious messages always wait for you. Turn it on?"
+    ),
+    "btn.autosend_confirm_yes": "✅ Yes, turn on",
+    "autosend.enabled": (
+        "⏱ Auto-send is on for “{chat}”. Each draft still appears here first; tap "
+        "“Don't send automatically” to stop it. Deleting the card in this chat does not cancel "
+        "it."
+    ),
+    "autosend.disabled": "⏱ Auto-send is off for “{chat}”.",
+    "autosend.confirm_cancelled": "Nothing was changed.",
+    "autosend.chat_not_active": "Auto-send needs an active chat: enable or include it first.",
+    "chat.auto_send": "⏱ Auto-send: {state} · {unchanged} of {total} sent unchanged (30 days)",
+    "chat.auto_send_no_data": "⏱ Auto-send: {state} · no decisions yet",
+    "chat.auto_send_state.on": "on",
+    "chat.auto_send_state.off": "off",
+    "btn.chat_auto_send_on": "⏱ Turn on auto-send",
+    "btn.chat_auto_send_off": "⏱ Turn off auto-send",
+    "btn.chat_auto_send_reset": "🔔 Offer auto-send again",
+    "autosend.offer_reset": "OK, I may offer auto-send for this chat again.",
+    "settings.auto_send": {
+        "one": "⏱ Auto-send: {n} chat · cancel window {window}",
+        "other": "⏱ Auto-send: {n} chats · cancel window {window}",
+    },
+    "settings.auto_send_off": "⏱ Auto-send: off · cancel window {window}",
+    "btn.auto_send_window": "⏱ Cancel window",
+    "btn.auto_send_off_all": "⏹ Turn off auto-send everywhere",
+    "btn.auto_send_list": "⏱ Chats with auto-send",
+    "settings.auto_send_window_prompt": (
+        "⏱ How long should a draft wait before it is sent automatically? You can stop it "
+        "any time in this window."
+    ),
+    "autosend.off_all_done": {
+        "one": "⏹ Auto-send is off everywhere ({n} chat).",
+        "other": "⏹ Auto-send is off everywhere ({n} chats).",
+    },
+    "autosend.list_header": "⏱ Chats with auto-send on:",
+    "autosend.list_empty": "Auto-send is off in every chat.",
+    "autosend.warn": (
+        "In “{chat}” you stopped or changed {interventions} of the last {sample} automatic "
+        "drafts. Turn auto-send off for this chat?"
+    ),
+    "btn.autosend_warn_off": "Turn off",
+    "btn.autosend_warn_keep": "Keep it on",
+    "autosend.warn_kept": "OK, auto-send stays on for this chat.",
+    "history.kind.auto_send_on": "⏱ Auto-send turned on",
+    "history.kind.auto_send_off": "⏱ Auto-send turned off",
+    "history.kind.auto_send_offered": "💡 Auto-send offered",
+    "history.kind.auto_send_offer_answered": "💡 Auto-send offer answered",
+    "history.kind.auto_approved": "⏱ Approved automatically",
+    "history.kind.auto_send_stopped": "⏹ Automatic sending stopped",
 }

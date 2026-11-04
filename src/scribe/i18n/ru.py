@@ -1528,4 +1528,98 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "spend_alert.p95_skipped": "Без перцентиля: тратили меньше {min} пользователей.",
     "spend_alert.soft": "Достигли мягкого лимита ({cap}, черновики на экономном уровне):",
     "spend_alert.hard": "Достигли жёсткого лимита ({cap}, черновики на паузе):",
+    # --- specs/014 auto-send ---
+    "card.auto_send_at": "⏱ Отправлю автоматически в {time}",
+    "card.auto_send_manual": "✋ Нужно ваше решение: {reasons}",
+    "card.auto_send_stopped": "⏹ Автоотправка отменена",
+    "btn.send_now": "✅ Отправить сейчас",
+    "btn.autostop": "⏹ Не отправлять автоматически",
+    "status.sent_auto": "✅ Отправлено автоматически в {time}",
+    "autosend.too_late": "Уже отправляется автоматически",
+    "autosend.reason.hard_stop": "подозрительное сообщение",
+    "autosend.reason.commitment": "новое обещание",
+    "autosend.reason.sensitive": "чувствительная тема",
+    "autosend.reason.placeholders": "нужны уточнения",
+    "autosend.reason.dates_differ": "даты расходятся",
+    "autosend.reason.conflict": "противоречит задаче или обещанию",
+    "autosend.reason.weak_style": "стиль ещё не изучен",
+    "autosend.reason.out_of_office": "вы вне офиса",
+    "autosend.reason.warning": "предупреждение в черновике",
+    "autosend.reason.no_output": "данные черновика недоступны",
+    "autosend.reason.outdated": "новые сообщения",
+    "autosend.reason.chat_off": "автоотправка в этом чате выключена",
+    "autosend.reason.outside_hours": "вне рабочего времени",
+    "autosend.reason.suspended": "доступ закончился",
+    "autosend.reason.paused": "пауза",
+    "autosend.reason.not_first_version": "вы уже работаете над этим черновиком",
+    "autosend.reason.possibly_unnecessary": "ответ, возможно, не нужен",
+    "autosend.reason.user_action": "вы остановили отправку",
+    "autosend.reason.disabled": "автоотправка выключена",
+    "autosend.reason.ineligible": "черновик требует проверки",
+    "autosend.reason.send_failed": "не удалось отправить",
+    "autosend.offer": (
+        "В чате «{chat}» за 30 дней вы отправили без правок {unchanged} из {total} черновиков. "
+        "Отправлять черновики в этом чате автоматически? Каждый вы всё равно увидите и "
+        "сможете остановить в течение {window}."
+    ),
+    "btn.autosend_offer_on": "Включить",
+    "btn.autosend_offer_later": "Не сейчас",
+    "btn.autosend_offer_never": "Не предлагать для этого чата",
+    "autosend.offer_later": "Хорошо, месяц не буду спрашивать про этот чат.",
+    "autosend.offer_never": "Хорошо, больше не буду предлагать автоотправку для этого чата.",
+    "autosend.confirm": (
+        "Автоотправка для «{chat}»: черновики без предупреждений будут уходить с вашего "
+        "аккаунта через {window} после появления здесь, если вы их не остановите. Черновики с "
+        "обещаниями, чувствительными темами, пропущенными деталями или подозрительными "
+        "сообщениями всегда ждут вас. Включить?"
+    ),
+    "btn.autosend_confirm_yes": "✅ Да, включить",
+    "autosend.enabled": (
+        "⏱ Автоотправка для «{chat}» включена. Каждый черновик всё равно сначала появляется "
+        "здесь; нажмите «Не отправлять автоматически», чтобы остановить. Удаление карточки в "
+        "этом чате отправку не отменяет."
+    ),
+    "autosend.disabled": "⏱ Автоотправка для «{chat}» выключена.",
+    "autosend.confirm_cancelled": "Ничего не изменено.",
+    "autosend.chat_not_active": "Для автоотправки чат должен быть активен: сначала включите его.",
+    "chat.auto_send": "⏱ Автоотправка: {state} · без правок {unchanged} из {total} (30 дней)",
+    "chat.auto_send_no_data": "⏱ Автоотправка: {state} · решений пока нет",
+    "chat.auto_send_state.on": "включена",
+    "chat.auto_send_state.off": "выключена",
+    "btn.chat_auto_send_on": "⏱ Включить автоотправку",
+    "btn.chat_auto_send_off": "⏱ Выключить автоотправку",
+    "btn.chat_auto_send_reset": "🔔 Снова предлагать автоотправку",
+    "autosend.offer_reset": "Хорошо, могу снова предложить автоотправку для этого чата.",
+    "settings.auto_send": {
+        "one": "⏱ Автоотправка: {n} чат · окно отмены {window}",
+        "few": "⏱ Автоотправка: {n} чата · окно отмены {window}",
+        "many": "⏱ Автоотправка: {n} чатов · окно отмены {window}",
+    },
+    "settings.auto_send_off": "⏱ Автоотправка: выключена · окно отмены {window}",
+    "btn.auto_send_window": "⏱ Окно отмены",
+    "btn.auto_send_off_all": "⏹ Выключить автоотправку везде",
+    "btn.auto_send_list": "⏱ Чаты с автоотправкой",
+    "settings.auto_send_window_prompt": (
+        "⏱ Сколько черновик ждёт перед автоматической отправкой? В это время его можно остановить."
+    ),
+    "autosend.off_all_done": {
+        "one": "⏹ Автоотправка выключена везде ({n} чат).",
+        "few": "⏹ Автоотправка выключена везде ({n} чата).",
+        "many": "⏹ Автоотправка выключена везде ({n} чатов).",
+    },
+    "autosend.list_header": "⏱ Чаты с включённой автоотправкой:",
+    "autosend.list_empty": "Автоотправка выключена во всех чатах.",
+    "autosend.warn": (
+        "В чате «{chat}» вы остановили или изменили {interventions} из последних {sample} "
+        "автоматических черновиков. Выключить автоотправку для этого чата?"
+    ),
+    "btn.autosend_warn_off": "Выключить",
+    "btn.autosend_warn_keep": "Оставить включённой",
+    "autosend.warn_kept": "Хорошо, автоотправка для этого чата остаётся включённой.",
+    "history.kind.auto_send_on": "⏱ Автоотправка включена",
+    "history.kind.auto_send_off": "⏱ Автоотправка выключена",
+    "history.kind.auto_send_offered": "💡 Предложена автоотправка",
+    "history.kind.auto_send_offer_answered": "💡 Ответ на предложение автоотправки",
+    "history.kind.auto_approved": "⏱ Одобрено автоматически",
+    "history.kind.auto_send_stopped": "⏹ Автоотправка остановлена",
 }

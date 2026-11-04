@@ -149,6 +149,8 @@ CROSS_USER = {
     ("llm_spend", "daily"),
     # Issue #74: the operators' daily spend alert spans users.
     ("llm_spend", "totals_on"),
+    # specs/014: the retention purge drops old decision rows for everyone.
+    ("decisions", "purge_older_than"),
 }
 
 

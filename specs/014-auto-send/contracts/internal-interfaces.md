@@ -7,25 +7,45 @@ Signatures are the contract; bodies are for implementation. All new code is in
 
 ```python
 class BlockReason(StrEnum):
-    hard_stop = "hard_stop"; commitment = "commitment"; sensitive = "sensitive"
-    placeholders = "placeholders"; dates_differ = "dates_differ"; conflict = "conflict"
-    weak_style = "weak_style"; out_of_office = "out_of_office"; warning = "warning"
-    no_output = "no_output"; outdated = "outdated"; chat_off = "chat_off"
-    outside_hours = "outside_hours"; suspended = "suspended"; paused = "paused"
-    not_first_version = "not_first_version"; possibly_unnecessary = "possibly_unnecessary"
+    hard_stop = "hard_stop"
+    commitment = "commitment"
+    sensitive = "sensitive"
+    placeholders = "placeholders"
+    dates_differ = "dates_differ"
+    conflict = "conflict"
+    weak_style = "weak_style"
+    out_of_office = "out_of_office"
+    warning = "warning"
+    no_output = "no_output"
+    outdated = "outdated"
+    chat_off = "chat_off"
+    outside_hours = "outside_hours"
+    suspended = "suspended"
+    paused = "paused"
+    not_first_version = "not_first_version"
+    possibly_unnecessary = "possibly_unnecessary"
+
 
 AUTO_SEND_ALLOWED_WARNINGS: frozenset[str] = frozenset()
+
 
 @dataclass(frozen=True)
 class Eligibility:
     reasons: tuple[BlockReason, ...]
+
     @property
     def eligible(self) -> bool: ...
 
+
 def eligibility(
-    *, draft: Draft, output: DraftOutput | None, system_warnings: Sequence[str],
-    context_warnings: Sequence[str], chat: WorkChat, user: User,
-    fire_at: datetime | None = None,   # set at fire time: adds the working-hours check
+    *,
+    draft: Draft,
+    output: DraftOutput | None,
+    system_warnings: Sequence[str],
+    context_warnings: Sequence[str],
+    chat: WorkChat,
+    user: User,
+    fire_at: datetime | None = None,  # set at fire time: adds the working-hours check
 ) -> Eligibility: ...
 ```
 
@@ -37,15 +57,23 @@ the same inputs (unit-tested table, SC-001).
 ```python
 @dataclass(frozen=True)
 class ArmPlan:
-    planned_due_at: datetime | None      # None: not eligible
+    planned_due_at: datetime | None  # None: not eligible
     reasons: tuple[BlockReason, ...]
+
 
 async def plan_arm(session: AsyncSession, *, draft_id: UUID, now: datetime) -> ArmPlan | None:
     """Read-only. None when the chat has auto-send off (ordinary card, no line).
     Otherwise eligibility() and planned_due_at = now + users.auto_send_window_s if eligible."""
 
-async def commit_arm(session: AsyncSession, *, draft_id: UUID, plan: ArmPlan,
-                     control_message_id: int, stored_at: datetime) -> bool:
+
+async def commit_arm(
+    session: AsyncSession,
+    *,
+    draft_id: UUID,
+    plan: ArmPlan,
+    control_message_id: int,
+    stored_at: datetime,
+) -> bool:
     """In the transaction that stores control_message_id. Locks the draft (FOR UPDATE),
     chat and user (FOR SHARE), re-checks eligibility. Eligible: sets
     auto_send_due_at = max(plan.planned_due_at, stored_at + window) and returns True.
@@ -65,17 +93,27 @@ by a re-post). `DraftCardView` gains `auto_send_at: datetime | None` and
 ```python
 # scheduling/scheduler.py
 def on_auto_sends(self, handler: DraftStepHandler) -> None: ...
+
+
 # _step_auto_sends: _draft_step(handler,
 #     Draft.auto_send_due_at <= now, Draft.auto_send_stop.is_(None),
 #     Draft.auto_approved_at.is_(None), Draft.outdated.is_(False),
 #     Draft.control_message_id.is_not(None))
 # runs after _step_due_turns and before _step_reminders.
 
+
 class AutoSender:
-    def __init__(self, session_factory, gateway, presenter: DraftPresenter, *,
-                 clock: Clock, marker: UnreadMarker | None,
-                 commitments: CommitmentExtractor | None,
-                 advisor: AutoSendAdvisor) -> None: ...
+    def __init__(
+        self,
+        session_factory,
+        gateway,
+        presenter: DraftPresenter,
+        *,
+        clock: Clock,
+        marker: UnreadMarker | None,
+        commitments: CommitmentExtractor | None,
+        advisor: AutoSendAdvisor,
+    ) -> None: ...
     async def __call__(self, session: AsyncSession, drafts: Sequence[Draft]) -> AfterCommit | None:
         """In the step's transaction, per draft: eligibility(fire_at=now).
         Eligible: auto_approved_at = now; activity auto_approved.
@@ -109,7 +147,7 @@ def stop_countdown(draft: Draft, reason: AutoSendStop) -> bool:
     """On a row the caller holds FOR UPDATE. True if it was armed and is now stopped.
     False if not armed, already stopped, or already fired (auto_approved_at set)."""
 
-def is_firing(draft: Draft) -> bool  # auto_approved_at set and state pending
+def is_firing(draft: Draft) -> bool  # auto_approved_at set, state pending, no auto_send_stop
 
 async def stop_chat_countdowns(session, *, user_id: UUID, work_chat_ids: Sequence[UUID] | None,
                                reason: AutoSendStop) -> list[UUID]:
@@ -145,8 +183,10 @@ transaction.
 # db/repos/decisions.py
 async def record(session, *, user_id, work_chat_id, draft_id, decision: DraftDecisionKind,
                  during_auto_send: bool, at: datetime) -> None
-async def chat_rate(session, *, work_chat_id: UUID, since: datetime) -> ChatRate  # unchanged, total
-async def recent_auto_outcomes(session, *, work_chat_id: UUID, limit: int) -> list[bool]
+async def chat_rate(session, *, user_id: UUID, work_chat_id: UUID, since: datetime) -> ChatRate  # unchanged, total
+async def recent_auto_outcomes(
+    session, *, user_id: UUID, work_chat_id: UUID, limit: int
+) -> list[bool]
     # one per draft with during_auto_send rows, newest first; True = intervened: the draft has an
     # auto_cancelled, sent_edited, rejected or regenerated row (sent_unchanged and auto_sent are not)
 async def purge_older_than(session, cutoff: datetime) -> int

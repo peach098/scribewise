@@ -217,6 +217,52 @@ class ActivityKind(enum.StrEnum):
     chat_included = "chat_included"  # 008: meta {work_chat_id}
     # #74: the daily hard cap paused drafting; the notice was sent (one per UTC day). Meta {day}
     budget_paused = "budget_paused"
+    # specs/014 auto-send. Meta (ids, counts and codes only): auto_send_on {work_chat_id, source};
+    # auto_send_off {work_chat_id | all, reason}; auto_send_offered {work_chat_id, unchanged,
+    # total}; auto_send_offer_answered {work_chat_id, answer}; auto_approved {window_s};
+    # auto_send_stopped {reason}. The ``sent`` record of an automatic send carries ``auto: true``.
+    auto_send_on = "auto_send_on"
+    auto_send_off = "auto_send_off"
+    auto_send_offered = "auto_send_offered"
+    auto_send_offer_answered = "auto_send_offer_answered"
+    auto_approved = "auto_approved"
+    auto_send_stopped = "auto_send_stopped"
+
+
+class AutoSendSource(enum.StrEnum):
+    """How auto-send was last turned on for a chat (specs/014 FR-001, FR-015)."""
+
+    manual = "manual"  # the user turned it on in /chats
+    offer = "offer"  # the user accepted Scribe's offer
+
+
+class AutoSendOfferState(enum.StrEnum):
+    none = "none"
+    offered = "offered"
+    opted_out = "opted_out"  # "Don't offer for this chat" (FR-017)
+
+
+class AutoSendStop(enum.StrEnum):
+    """Why a draft's countdown ended without a send (specs/014 data-model.md)."""
+
+    user_action = "user_action"
+    disabled = "disabled"
+    outdated = "outdated"
+    ineligible = "ineligible"
+    outside_hours = "outside_hours"
+    paused = "paused"
+    send_failed = "send_failed"
+
+
+class DraftDecisionKind(enum.StrEnum):
+    """What the user (or the countdown) did with a draft (specs/014 research A5)."""
+
+    sent_unchanged = "sent_unchanged"
+    sent_edited = "sent_edited"
+    rejected = "rejected"
+    regenerated = "regenerated"
+    auto_sent = "auto_sent"
+    auto_cancelled = "auto_cancelled"
 
 
 class ReplyDecision(enum.StrEnum):
@@ -308,6 +354,7 @@ class User(_Timestamps, Base):
         CheckConstraint(f"delay_max_s <= {MAX_DELAY_S}", name="delay_max_cap"),
         CheckConstraint("work_start < work_end", name="work_hours"),
         CheckConstraint("cardinality(working_days) > 0", name="working_days_non_empty"),
+        CheckConstraint("auto_send_window_s BETWEEN 60 AND 900", name="auto_send_window_range"),
         CheckConstraint("language IN ('en', 'ru')", name="language"),
         CheckConstraint(
             "grammatical_gender IS NULL OR grammatical_gender IN ('masculine', 'feminine')",
@@ -386,6 +433,12 @@ class User(_Timestamps, Base):
         Boolean, nullable=False, default=False, server_default=SERVER_FALSE
     )
     work_account_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # specs/014 FR-007: how long a card with a countdown waits before it is sent (60-900 s).
+    auto_send_window_s: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=120, server_default="120"
+    )
+    # specs/014 FR-018: at most one auto-send offer per 24 hours across all chats.
+    auto_send_last_offer_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class TelegramSession(_Timestamps, Base):
@@ -450,6 +503,10 @@ class WorkChat(_Timestamps, Base):
         CheckConstraint(
             "unread_mark_floor IS NULL OR unread_mark_floor > 0", name="unread_mark_floor_positive"
         ),
+        # specs/014 FR-001: auto-send is on only with a recorded source (manual or offer).
+        CheckConstraint(
+            "NOT auto_send OR auto_send_source IS NOT NULL", name="auto_send_needs_source"
+        ),
     )
 
     user_id: Mapped[uuid.UUID] = _user_fk()
@@ -485,6 +542,26 @@ class WorkChat(_Timestamps, Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=utcnow, server_default=func.now()
     )
+    # specs/014 FR-001/FR-002: opt-in auto-send for this one chat, off by default. Only
+    # ``sending/auto_send.py`` and ``chats/work_account.py`` write it; ``auto_send`` implies
+    # ``enabled AND NOT excluded`` (FR-021), kept by every path that disables or excludes a chat.
+    auto_send: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=SERVER_FALSE
+    )
+    auto_send_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    auto_send_source: Mapped[AutoSendSource | None] = mapped_column(
+        _pg_enum(AutoSendSource, "auto_send_source")
+    )
+    # FR-016/FR-017: the offer state and the earliest time of the next offer ("Not now" = +30 d).
+    auto_send_offer: Mapped[AutoSendOfferState] = mapped_column(
+        _pg_enum(AutoSendOfferState, "auto_send_offer_state"),
+        nullable=False,
+        default=AutoSendOfferState.none,
+        server_default=AutoSendOfferState.none.value,
+    )
+    auto_send_offer_not_before: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # FR-020: when the "consider turning auto-send off" suggestion was last posted (7 d gap).
+    auto_send_warned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class Contact(_Timestamps, Base):
@@ -604,9 +681,30 @@ class ConversationTurn(_Timestamps, Base):
 class Draft(_Timestamps, Base):
     __tablename__ = "drafts"
     __table_args__ = (
-        # Principle I: a draft can only be "sent" after explicit approval.
+        # Principle I: a draft can only be "sent" after approval: the user's tap
+        # (``approved_by_user_at``) or, in a chat the user opted in to, the end of the cancel
+        # window they were shown (``auto_approved_at``, specs/014 research A1).
         CheckConstraint(
-            "state <> 'sent' OR approved_by_user_at IS NOT NULL", name="sent_requires_approval"
+            "state <> 'sent' OR approved_by_user_at IS NOT NULL OR auto_approved_at IS NOT NULL",
+            name="sent_requires_approval",
+        ),
+        # An automatic approval is only possible for a draft that was shown with a countdown ...
+        CheckConstraint(
+            "auto_approved_at IS NULL OR auto_send_due_at IS NOT NULL",
+            name="auto_approved_needs_window",
+        ),
+        # ... and a countdown only exists for a card that was posted (research A4a, FR-006).
+        CheckConstraint(
+            "auto_send_due_at IS NULL OR control_message_id IS NOT NULL",
+            name="auto_send_needs_card",
+        ),
+        # The scheduler's auto-send step reads only running countdowns.
+        Index(
+            "ix_drafts_auto_send_due",
+            "auto_send_due_at",
+            postgresql_where=text(
+                "state = 'pending' AND auto_send_stop IS NULL AND auto_approved_at IS NULL"
+            ),
         ),
         Index(
             "uq_drafts_one_pending_per_turn",
@@ -656,6 +754,16 @@ class Draft(_Timestamps, Base):
     )
     # Nullable: the card is posted after the draft row exists.
     control_message_id: Mapped[int | None] = mapped_column(BigInteger)
+    # specs/014: the end of the cancel window, set together with ``control_message_id`` when the
+    # card of an eligible draft is posted (never before, research A4a). NULL: no countdown.
+    auto_send_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # Why the countdown ended without a send; NULL while it runs or when it never ran.
+    auto_send_stop: Mapped[AutoSendStop | None] = mapped_column(
+        _pg_enum(AutoSendStop, "auto_send_stop")
+    )
+    # Set only by the auto-send step when the window ended and the draft was still eligible;
+    # ``approved_by_user_at`` keeps meaning "the user tapped Send" (research A1).
+    auto_approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class StyleProfile(_Timestamps, Base):
@@ -814,6 +922,30 @@ class JiraCommentCursor(_Timestamps, Base):
     outcome: Mapped[JiraCursorOutcome] = mapped_column(
         _pg_enum(JiraCursorOutcome, "jira_cursor_outcome"), nullable=False
     )
+
+
+class DraftDecision(_Timestamps, Base):
+    """What the user (or the countdown) did with a draft (specs/014 research A5): the source of
+    the per-chat "sent unchanged" rate and of the intervention count. Ids, a code and a flag
+    only, never content; deleted with the user and the chat, purged after 31 days
+    (``retention/purge.py``), kept (``draft_id`` NULL) when the draft is deleted."""
+
+    __tablename__ = "draft_decisions"
+    __table_args__ = (Index("ix_draft_decisions_chat_at", "work_chat_id", "at"),)
+
+    user_id: Mapped[uuid.UUID] = _user_fk()
+    work_chat_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("work_chats.id", ondelete="CASCADE"), nullable=False
+    )
+    draft_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("drafts.id", ondelete="SET NULL")
+    )
+    decision: Mapped[DraftDecisionKind] = mapped_column(
+        _pg_enum(DraftDecisionKind, "draft_decision"), nullable=False
+    )
+    # The draft had a countdown armed when it was decided.
+    during_auto_send: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ActivityRecord(_Timestamps, Base):
