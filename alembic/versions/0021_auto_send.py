@@ -2,8 +2,8 @@
 state on ``work_chats``, the cancel window on ``users``, the countdown and its automatic
 approval on ``drafts``, the ``draft_decisions`` table and the new ``activity_kind`` values.
 
-Revision ID: 0020
-Revises: 0019
+Revision ID: 0021
+Revises: 0020
 Create Date: 2026-11-04
 
 Everything is off or empty for existing rows: ``work_chats.auto_send = false``,
@@ -32,8 +32,8 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
-revision: str = "0020"
-down_revision: str | Sequence[str] | None = "0019"
+revision: str = "0021"
+down_revision: str | Sequence[str] | None = "0020"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

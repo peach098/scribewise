@@ -1174,7 +1174,7 @@ async def test_migration_auto_send(migrated_database_url: str) -> None:
         )
 
     try:
-        _alembic(scratch_url, "upgrade", "0019")
+        _alembic(scratch_url, "upgrade", "0020")
         await accepted(
             "INSERT INTO users (id, telegram_control_chat_id, display_name, timezone,"
             " working_days, work_start, work_end, delay_min_s, delay_max_s, state)"
@@ -1274,7 +1274,7 @@ async def test_migration_auto_send(migrated_database_url: str) -> None:
             await connection.execute(text("DELETE FROM users WHERE id = :user"), ids)
         assert not await exists("SELECT count(*) > 0 FROM draft_decisions")
 
-        _alembic(scratch_url, "downgrade", "0019")
+        _alembic(scratch_url, "downgrade", "0020")
         assert not await exists(
             "SELECT 1 FROM information_schema.tables WHERE table_name = 'draft_decisions'"
         )
