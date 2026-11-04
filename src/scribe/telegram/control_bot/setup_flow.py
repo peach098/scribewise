@@ -40,15 +40,16 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from scribe.chats import work_account
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
-from scribe.db.models import SessionStatus, User, UserState
+from scribe.db.models import ProfileScope, SessionStatus, User, UserState
 from scribe.db.repos import chats as chats_repo
+from scribe.db.repos import profiles as profiles_repo
 from scribe.db.repos import users as users_repo
 from scribe.i18n import Lang, t
 from scribe.llm.registry import LLMRouter
 from scribe.logging import get_logger
 from scribe.style.grammatical_gender import recent_texts
-from scribe.style.importer import import_own_messages
-from scribe.style.profiles import build_global_profile
+from scribe.style.importer import ImportResult, import_own_messages
+from scribe.style.profiles import BuildSummary, build_global_profile, build_profiles_from_import
 from scribe.telegram.control_bot import chat_picker, connect_flow, grammatical_gender
 from scribe.telegram.control_bot.menu import set_chat_commands
 from scribe.telegram.control_bot.render import (
@@ -335,6 +336,48 @@ async def _set_time_zone_and_finish(
     )
 
 
+async def _build_profiles_note(
+    session_factory: async_sessionmaker[AsyncSession],
+    llm_router: LLMRouter,
+    user: User,
+    imported: ImportResult,
+    *,
+    settings: Settings,
+    clock: Clock,
+) -> str:
+    """The same profiles as 🔄 Rebuild (FR-034, FR-035): global + the top contacts, built with
+    synchronous calls (the user is waiting). Whatever fails, the user ends up with a global
+    profile (a neutral one when nothing could be learned) and the note says what was missed."""
+    lang = user.language
+    summary: BuildSummary | None = None
+    try:
+        summary = await build_profiles_from_import(
+            session_factory, llm_router, user.id, imported, settings=settings, clock=clock
+        )
+    except Exception as exc:
+        log.error("setup_profile_failed", user_id=str(user.id), error=type(exc).__name__)
+    profile = summary.global_profile if summary is not None else None
+    if profile is None:
+        # The global build failed (or the build crashed before storing it): keep one that
+        # exists, else store the neutral default (no LLM call).
+        async with session_factory() as session:
+            existing = await profiles_repo.get_current_profile(
+                session, user.id, scope=ProfileScope.global_
+            )
+        if existing is None:
+            await build_global_profile(session_factory, llm_router, user.id, [], settings=settings)
+        note = t("setup.learn_failed", lang)
+    else:
+        note = t("setup.learned", lang, n=profile.sample_size)
+    if summary is not None and summary.contact_profiles:
+        note += " " + t("setup.contacts", lang, n=summary.contact_profiles)
+    if profile is not None and profile.rules_json.get("weak"):
+        note += " " + t("setup.weak", lang, n=settings.min_style_samples)
+    if summary is not None and summary.contact_failures:
+        note += "\n" + t("setup.contacts_failed", lang, n=summary.contact_failures)
+    return note
+
+
 async def _import_and_finish(
     bot: Bot,
     chat_id: int,
@@ -363,16 +406,14 @@ async def _import_and_finish(
             )
             await session.commit()
         recent = recent_texts(imported.samples)  # issue #46, in memory only
-        profile = await build_global_profile(
-            session_factory, llm_router, user.id, imported.samples, settings=settings
-        )
-        note = t("setup.learned", lang, n=profile.sample_size)
-        if profile.rules_json.get("weak"):
-            note += " " + t("setup.weak", lang, n=settings.min_style_samples)
     except Exception as exc:
         log.error("setup_profile_failed", user_id=str(user.id), error=type(exc).__name__)
         await build_global_profile(session_factory, llm_router, user.id, [], settings=settings)
         note = t("setup.learn_failed", lang)
+    else:
+        note = await _build_profiles_note(
+            session_factory, llm_router, user, imported, settings=settings, clock=clock
+        )
     await bot.edit_message_text(text=note, chat_id=chat_id, message_id=progress.message_id)
 
     # Issue #46: the claim for the grammatical gender question (a conditional UPDATE, None when

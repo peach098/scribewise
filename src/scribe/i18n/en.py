@@ -104,6 +104,16 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
         "one": "✅ Learned your style from {n} of your messages.",
         "other": "✅ Learned your style from {n} of your messages.",
     },
+    "setup.contacts": {
+        "one": "Built {n} profile for a contact you write to most.",
+        "other": "Built {n} profiles for the contacts you write to most.",
+    },
+    "setup.contacts_failed": {
+        "one": "⚠️ {n} contact profile couldn't be built; that contact uses your global profile.",
+        "other": (
+            "⚠️ {n} contact profiles couldn't be built; those contacts use your global profile."
+        ),
+    },
     "setup.weak": (
         "That's fewer than {n}, so style matching will be weak at first and drafts use a "
         "neutral, polite tone."
