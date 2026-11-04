@@ -1476,6 +1476,7 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
         "other": "⏹ Auto-send is off everywhere ({n} chats).",
     },
     "autosend.list_header": "⏱ Chats with auto-send on:",
+    "autosend.window_invalid": "Choose a cancel window between 1 and 15 minutes.",
     "autosend.list_empty": "Auto-send is off in every chat.",
     "autosend.warn": (
         "In “{chat}” you stopped or changed {interventions} of the last {sample} automatic "

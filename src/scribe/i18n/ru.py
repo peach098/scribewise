@@ -1608,6 +1608,7 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
         "many": "⏹ Автоотправка выключена везде ({n} чатов).",
     },
     "autosend.list_header": "⏱ Чаты с включённой автоотправкой:",
+    "autosend.window_invalid": "Выберите окно отмены от 1 до 15 минут.",
     "autosend.list_empty": "Автоотправка выключена во всех чатах.",
     "autosend.warn": (
         "В чате «{chat}» вы остановили или изменили {interventions} из последних {sample} "

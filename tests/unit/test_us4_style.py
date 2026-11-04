@@ -399,11 +399,12 @@ NO_ENTITY_ACTIONS = {
     "skipcfg",  # 004: skipcfg:global:<on|off>, the caller's own users row
     "skippage",
     "skipchats",
+    "autowin",  # specs/014: autowin:<seconds>, the caller's own users row
     "setgender",  # issue #46: setgender:<masculine|feminine>, the caller's own users row
 }
-# specs/014: ownership is listed for these before US2 / US3 register their handlers (T028, T033);
-# empty this set when they do.
-AUTO_SEND_HANDLERS_PENDING = {"autooffer", "autowarn"}
+# specs/014: entity actions listed in ownership.py before their handlers were registered; empty now
+# that the offer and warning handlers are (kept so a future split can use it again).
+AUTO_SEND_HANDLERS_PENDING: set[str] = set()
 _ACTION_IN_FILTER = re.compile(r"^\^?([a-z_]+):")
 
 

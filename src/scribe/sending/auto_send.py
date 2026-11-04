@@ -37,7 +37,9 @@ from datetime import datetime, timedelta
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import select, update
+from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.clock import Clock, utcnow
@@ -45,6 +47,7 @@ from scribe.context.commitments import CommitmentExtractor
 from scribe.context.task_dates import MISMATCH_PREFIX
 from scribe.db.models import (
     ActivityKind,
+    AutoSendOfferState,
     AutoSendSource,
     AutoSendStop,
     ConversationTurn,
@@ -70,6 +73,7 @@ from scribe.sending.send import (
     SendRefused,
     send_approved_draft,
 )
+from scribe.telegram.control_bot.render import button, format_callback, keyboard
 from scribe.telegram.gateway import MessagingGateway
 from scribe.telegram.unread_mark import UnreadMarker
 
@@ -81,6 +85,7 @@ OFFER_RATE = 0.60  # strictly greater
 OFFER_WINDOW = timedelta(days=30)
 OFFER_SNOOZE = timedelta(days=30)
 OFFER_GAP = timedelta(hours=24)
+AUTO_SEND_WINDOWS = (60, 120, 300, 600, 900)  # FR-007: the cancel window, 1 to 15 minutes
 WARN_SAMPLE = 10
 WARN_MAX_INTERVENTIONS = 4  # strictly more
 WARN_GAP = timedelta(days=7)
@@ -321,7 +326,7 @@ async def stop_for_user(
                 await decisions_repo.record(
                     session,
                     user_id=user_id,
-                    work_chat_id=await _work_chat_id(session, draft),
+                    work_chat_id=await work_chat_id_of(session, draft),
                     draft_id=draft.id,
                     decision=DraftDecisionKind.auto_cancelled,
                     during_auto_send=True,
@@ -331,7 +336,7 @@ async def stop_for_user(
     return stopped
 
 
-async def _work_chat_id(session: AsyncSession, draft: Draft) -> uuid.UUID:
+async def work_chat_id_of(session: AsyncSession, draft: Draft) -> uuid.UUID:
     return (
         await session.execute(
             select(ConversationTurn.work_chat_id).where(
@@ -581,6 +586,60 @@ async def set_chat_auto_send(
     )
 
 
+async def turn_off_everywhere(
+    session: AsyncSession, *, user_id: uuid.UUID, now: datetime
+) -> list[uuid.UUID]:
+    """Turn auto-send off in every chat of the user at once (FR-010, SC-005): one ``auto_send_off``
+    activity record (``all: true``), every running countdown stopped. Returns the draft ids whose
+    cards must be re-rendered. Locks the chats; the caller commits."""
+    chats = list(
+        (
+            await session.execute(
+                select(WorkChat)
+                .where(WorkChat.user_id == user_id, WorkChat.auto_send.is_(True))
+                .order_by(WorkChat.id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not chats:
+        return []
+    for chat in chats:
+        chat.auto_send = False
+        chat.auto_send_changed_at = now
+    await activity_repo.record(
+        session,
+        user_id,
+        ActivityKind.auto_send_off,
+        at=now,
+        meta={"all": True, "reason": "user", "chats": len(chats)},
+    )
+    log.info("auto_send_changed", user_id=str(user_id), all=True, on=False, chats=len(chats))
+    return await stop_chat_countdowns(
+        session,
+        user_id=user_id,
+        work_chat_ids=[chat.id for chat in chats],
+        reason=AutoSendStop.disabled,
+        at=now,
+    )
+
+
+async def count_auto_send_chats(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """How many of the user's chats have auto-send on (the /settings line)."""
+    return int(
+        (
+            await session.execute(
+                select(func.count())
+                .select_from(WorkChat)
+                .where(WorkChat.user_id == user_id, WorkChat.auto_send.is_(True))
+            )
+        ).scalar_one()
+    )
+
+
 def window_label(seconds: int, lang: str) -> str:
     """``2 min`` / ``90 s`` in the user's language."""
     if seconds % 60 == 0:
@@ -796,3 +855,216 @@ class AutoSender:
             await update
         except Exception as exc:
             log.warning("auto_send_card_update_failed", error=type(exc).__name__)
+
+
+# --- the offer and the suggestion to turn auto-send off (research A7) ------------------------
+
+
+def should_offer(rate: decisions_repo.ChatRate, chat: WorkChat, user: User, now: datetime) -> bool:
+    """FR-015, FR-016, FR-018: at least 20 counted decisions in 30 days and a share sent unchanged
+    strictly above 60 % (integer arithmetic, 12 of 20 is exactly 60 % and does not qualify),
+    auto-send off, not opted out, not snoozed, and no offer in the last 24 hours."""
+    if chat.auto_send or chat.auto_send_offer == AutoSendOfferState.opted_out:
+        return False
+    if rate.total < OFFER_MIN_DECISIONS or rate.unchanged * 100 <= rate.total * round(
+        OFFER_RATE * 100
+    ):
+        return False
+    if chat.auto_send_offer_not_before is not None and chat.auto_send_offer_not_before > now:
+        return False
+    last = user.auto_send_last_offer_at
+    return last is None or now - last >= OFFER_GAP
+
+
+def should_warn(outcomes: Sequence[bool], chat: WorkChat, now: datetime) -> bool:
+    """FR-020: auto-send is on, the chat has at least ``WARN_SAMPLE`` drafts that had a countdown,
+    more than ``WARN_MAX_INTERVENTIONS`` of the last ``WARN_SAMPLE`` needed the user, and the
+    last suggestion is older than ``WARN_GAP``."""
+    if not chat.auto_send or len(outcomes) < WARN_SAMPLE:
+        return False
+    if sum(1 for intervened in outcomes[:WARN_SAMPLE] if intervened) <= WARN_MAX_INTERVENTIONS:
+        return False
+    return chat.auto_send_warned_at is None or now - chat.auto_send_warned_at >= WARN_GAP
+
+
+@dataclass(frozen=True)
+class _Notice:
+    """A message the advisor posts after its leases were committed."""
+
+    chat_id: int
+    text: str
+    markup: InlineKeyboardMarkup
+
+
+class AutoSendAdvisor:
+    """Offers auto-send for a chat the user keeps sending unchanged, and suggests turning it off
+    when the user keeps stepping in (FR-015..FR-020). :meth:`after_decision` runs after a
+    decision's transaction committed (``review.py``, ``AutoSender``). It never raises: a failure
+    is logged and the action that triggered it stays done. The leases (offer state, snooze,
+    ``users.auto_send_last_offer_at``, ``auto_send_warned_at``) are committed *before* the message
+    is posted, so a crash can never repeat a message."""
+
+    def __init__(
+        self,
+        session_factory: async_sessionmaker[AsyncSession],
+        bot: Bot,
+        *,
+        clock: Clock = utcnow,
+    ) -> None:
+        self._session_factory = session_factory
+        self._bot = bot
+        self._clock = clock
+
+    async def after_decision(self, user_id: uuid.UUID, work_chat_id: uuid.UUID) -> None:
+        try:
+            notice = await self._lease(user_id, work_chat_id)
+            if notice is not None:
+                await self._bot.send_message(
+                    notice.chat_id, notice.text, reply_markup=notice.markup
+                )
+        except Exception as exc:
+            log.error(
+                "autosend_advisor_failed",
+                user_id=str(user_id),
+                work_chat_id=str(work_chat_id),
+                error=type(exc).__name__,
+            )
+
+    async def _lease(self, user_id: uuid.UUID, work_chat_id: uuid.UUID) -> _Notice | None:
+        now = self._clock()
+        async with self._session_factory() as session:
+            chat = (
+                await session.execute(
+                    select(WorkChat)
+                    .where(WorkChat.user_id == user_id, WorkChat.id == work_chat_id)
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            user = await session.get(User, user_id)
+            if chat is None or user is None:
+                return None
+            notice = (
+                await self._warn(session, chat, user, now)
+                if chat.auto_send
+                else await self._offer(session, chat, user, now)
+            )
+            await session.commit()
+        return notice
+
+    async def _offer(
+        self, session: AsyncSession, chat: WorkChat, user: User, now: datetime
+    ) -> _Notice | None:
+        if not chat.enabled or chat.excluded:
+            return None
+        rate = await decisions_repo.chat_rate(
+            session, user_id=user.id, work_chat_id=chat.id, since=now - OFFER_WINDOW
+        )
+        if not should_offer(rate, chat, user, now):
+            return None
+        # One offer per 24 h across all chats (FR-018): the conditional update is the lease, and
+        # a concurrent offer for another chat waits for it and then matches no row.
+        leased = await session.execute(
+            update(User)
+            .where(
+                User.id == user.id,
+                (User.auto_send_last_offer_at.is_(None))
+                | (User.auto_send_last_offer_at <= now - OFFER_GAP),
+            )
+            .values(auto_send_last_offer_at=now)
+            .returning(User.id)
+            .execution_options(synchronize_session=False)
+        )
+        if leased.first() is None:
+            return None
+        chat.auto_send_offer = AutoSendOfferState.offered
+        chat.auto_send_offer_not_before = now + OFFER_SNOOZE
+        await activity_repo.record(
+            session,
+            user.id,
+            ActivityKind.auto_send_offered,
+            at=now,
+            meta={
+                "work_chat_id": str(chat.id),
+                "unchanged": rate.unchanged,
+                "total": rate.total,
+            },
+        )
+        log.info(
+            "auto_send_offered",
+            user_id=str(user.id),
+            work_chat_id=str(chat.id),
+            unchanged=rate.unchanged,
+            total=rate.total,
+        )
+        lang = user.language
+        text = t(
+            "autosend.offer",
+            lang,
+            chat=chat.title or t("common.chat", lang),
+            unchanged=rate.unchanged,
+            total=rate.total,
+            window=window_label(user.auto_send_window_s, lang),
+        )
+        markup = keyboard(
+            [
+                [
+                    button(
+                        t("btn.autosend_offer_on", lang),
+                        format_callback("autooffer", chat.id, "on"),
+                    ),
+                    button(
+                        t("btn.autosend_offer_later", lang),
+                        format_callback("autooffer", chat.id, "later"),
+                    ),
+                ],
+                [
+                    button(
+                        t("btn.autosend_offer_never", lang),
+                        format_callback("autooffer", chat.id, "never"),
+                    )
+                ],
+            ]
+        )
+        return _Notice(user.telegram_control_chat_id, text, markup)
+
+    async def _warn(
+        self, session: AsyncSession, chat: WorkChat, user: User, now: datetime
+    ) -> _Notice | None:
+        outcomes = await decisions_repo.recent_auto_outcomes(
+            session, user_id=user.id, work_chat_id=chat.id, limit=WARN_SAMPLE
+        )
+        if not should_warn(outcomes, chat, now):
+            return None
+        chat.auto_send_warned_at = now
+        interventions = sum(1 for intervened in outcomes if intervened)
+        log.info(
+            "auto_send_warned",
+            user_id=str(user.id),
+            work_chat_id=str(chat.id),
+            interventions=interventions,
+            sample=len(outcomes),
+        )
+        lang = user.language
+        text = t(
+            "autosend.warn",
+            lang,
+            chat=chat.title or t("common.chat", lang),
+            interventions=interventions,
+            sample=len(outcomes),
+        )
+        markup = keyboard(
+            [
+                [
+                    button(
+                        t("btn.autosend_warn_off", lang),
+                        format_callback("chatauto", chat.id, "off"),
+                    ),
+                    button(
+                        t("btn.autosend_warn_keep", lang),
+                        format_callback("autowarn", chat.id, "keep"),
+                    ),
+                ]
+            ]
+        )
+        return _Notice(user.telegram_control_chat_id, text, markup)

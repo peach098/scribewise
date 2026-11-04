@@ -85,6 +85,7 @@ from scribe.db.models import (
     ConnectionStatus,
     ConversationTurn,
     Draft,
+    DraftDecisionKind,
     DraftState,
     ProfileScope,
     TurnState,
@@ -94,6 +95,7 @@ from scribe.db.models import (
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import commitments as commitments_repo
+from scribe.db.repos import decisions as decisions_repo
 from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import messages as messages_repo
 from scribe.db.repos import profiles as profiles_repo
@@ -128,6 +130,7 @@ from scribe.llm.registry import LLMRouter
 from scribe.logging import get_logger
 from scribe.scheduling.deadlines import expire_draft
 from scribe.sending import auto_send
+from scribe.sending.auto_send import DecisionAdvisor
 from scribe.sending.send import (
     AccessSuspended,
     DraftOutdated,
@@ -854,6 +857,24 @@ async def _owned_draft(
     return data, draft
 
 
+async def _advise(
+    advisor: DecisionAdvisor | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    user_id: uuid.UUID,
+    draft: Draft,
+) -> None:
+    """specs/014 research A7: after a decision committed, let the advisor weigh the offer and the
+    suggestion to turn auto-send off. Nothing here can fail the action that triggered it."""
+    if advisor is None:
+        return
+    try:
+        async with session_factory() as session:
+            work_chat_id = await auto_send.work_chat_id_of(session, draft)
+        await advisor.after_decision(user_id, work_chat_id)
+    except Exception as exc:
+        log.warning("autosend_advisor_call_failed", error=type(exc).__name__)
+
+
 async def _approve_and_send(
     *,
     bot: Bot,
@@ -865,6 +886,7 @@ async def _approve_and_send(
     edited_text: str | None = None,
     allow_outdated: bool = False,
     unread_marker: UnreadMarker | None = None,
+    advisor: DecisionAdvisor | None = None,
 ) -> bool:
     """Record the explicit approval of this draft, then send through ``send.py``."""
     lang = user.language
@@ -933,6 +955,7 @@ async def _approve_and_send(
     )
     if result.edited:
         await _propose_rules(bot, user, draft.id, session_factory)
+    await _advise(advisor, session_factory, user.id, draft)
     return True
 
 
@@ -981,6 +1004,7 @@ async def on_approve(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1027,6 +1051,7 @@ async def on_approve(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, allow_outdated=anyway, unread_marker=unread_marker,
+        advisor=auto_send_advisor,
     )  # fmt: skip
 
 
@@ -1041,6 +1066,7 @@ async def on_edit(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1066,6 +1092,7 @@ async def on_edit(
         await _approve_and_send(
             bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
             clock=clock, edited_text=edited, allow_outdated=True, unread_marker=unread_marker,
+            advisor=auto_send_advisor,
         )  # fmt: skip
         return
     if not await _claim_card_action(session_factory, user, draft, clock()):
@@ -1095,6 +1122,7 @@ async def on_edited_text(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     fsm = await state.get_data()
     text = await edited_text_of(bot, message.text or "")  # never saves the inline "@bot "
@@ -1126,6 +1154,7 @@ async def on_edited_text(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, edited_text=text, allow_outdated=True, unread_marker=unread_marker,
+        advisor=auto_send_advisor,
     )  # fmt: skip
 
 
@@ -1236,6 +1265,7 @@ async def on_reject(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1266,6 +1296,15 @@ async def on_reject(
             return
         if auto_send.stop_countdown(stored, AutoSendStop.user_action):
             await auto_send.note_stopped(session, stored, AutoSendStop.user_action, now)
+        await decisions_repo.record(
+            session,
+            user_id=user.id,
+            work_chat_id=await auto_send.work_chat_id_of(session, stored),
+            draft_id=draft.id,
+            decision=DraftDecisionKind.rejected,
+            during_auto_send=stored.auto_send_due_at is not None,
+            at=now,
+        )
         await drafts_repo.finalize(session, user.id, draft.id, DraftState.rejected, at=now)
         await session.execute(
             update(ConversationTurn)
@@ -1288,6 +1327,7 @@ async def on_reject(
     await callback.answer(t("review.rejected", lang))
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, Msg("status.rejected"))
+    await _advise(auto_send_advisor, session_factory, user.id, draft)
 
 
 async def on_regen(
@@ -1301,6 +1341,7 @@ async def on_regen(
     lang: Lang,
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1367,10 +1408,20 @@ async def on_regen(
             conversation_turn_id=new.conversation_turn_id,
             meta={"previous_draft_id": str(draft.id), "version": new.version},
         )
+        await decisions_repo.record(  # specs/014: the superseded version was not good enough
+            session,
+            user_id=user.id,
+            work_chat_id=await auto_send.work_chat_id_of(session, draft),
+            draft_id=draft.id,
+            decision=DraftDecisionKind.regenerated,
+            during_auto_send=draft.auto_send_due_at is not None,
+            at=clock(),
+        )
         await session.commit()
     presenter = DraftPresenter(bot, session_factory, clock=clock)
     await presenter.show_status(user.id, draft.id, Msg("status.superseded"))
     await presenter.post_card(user.id, new.id)
+    await _advise(auto_send_advisor, session_factory, user.id, draft)
 
 
 async def on_autostop(
@@ -1380,6 +1431,7 @@ async def on_autostop(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    auto_send_advisor: DecisionAdvisor | None = None,
 ) -> None:
     """``autostop:<draft_id>`` (⏹ Don't send automatically, specs/014 FR-008): cancel the
     countdown, keep the draft pending and approvable. Writes an ``auto_cancelled`` decision."""
@@ -1403,6 +1455,7 @@ async def on_autostop(
     if stopped:
         presenter = DraftPresenter(bot, session_factory, clock=clock)
         await presenter.show_manual(user.id, draft.id, stopped=True)
+        await _advise(auto_send_advisor, session_factory, user.id, draft)
 
 
 async def on_sources(

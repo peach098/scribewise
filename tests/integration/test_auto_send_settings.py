@@ -4,6 +4,7 @@ only."""
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -17,7 +18,9 @@ from scribe.db.models import (
     ActivityKind,
     ActivityRecord,
     AutoSendSource,
+    AutoSendStop,
     Contact,
+    Draft,
     User,
     UserState,
     WorkChat,
@@ -27,9 +30,15 @@ from scribe.llm.registry import LLMRouter
 from scribe.telegram.control_bot import settings as settings_module
 from scribe.telegram.fake_gateway import FakeMessagingGateway
 from tests.conftest import FrozenClock, MakeChat, MakeContact, MakeUser
-from tests.integration.bot_support import callback_update
+from tests.integration.bot_support import callback_update, text_update
 from tests.integration.us1_support import grounded_reply, select_all_history
-from tests.integration.us2_support import US2Harness, arm_chat, button_texts, callback_datas
+from tests.integration.us2_support import (
+    US2Harness,
+    arm_chat,
+    button_texts,
+    callback_datas,
+    seed_decisions,
+)
 from tests.integration.us4_support import add_profile
 
 REPLY = "Synthetic reply about the report"
@@ -291,3 +300,166 @@ async def test_us1_a_contact_cannot_turn_auto_send_on(
         window = await session.scalar(select(User.auto_send_window_s).where(User.id == user.id))
     assert window == 120
     assert harness.gateway.send_text_calls == []
+
+
+# --- US3: the cancel window, off everywhere, the list of chats (FR-007, FR-010, FR-019) -----------
+
+
+async def _settings_screen(harness: US2Harness, user: User) -> Any:
+    await harness.feed(text_update(user.telegram_control_chat_id, "/settings"))
+    return harness.messages()[-1]
+
+
+async def _second_chat(
+    harness: US2Harness, user: User, make_chat: MakeChat, make_contact: MakeContact, title: str
+) -> WorkChat:
+    contact = await make_contact(user, display_name=title)
+    return await make_chat(user, title=title, telegram_chat_id=contact.telegram_peer_id)
+
+
+async def test_us3_settings_shows_the_count_of_chats_and_the_window(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, chat, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    screen = await _settings_screen(harness, user)
+    assert "⏱ Auto-send: off · cancel window 2 min" in screen.text
+    data = callback_datas(screen.reply_markup)
+    assert "settings:auto_send_window" in data
+    assert "settings:auto_send_off_all" not in data  # only while it is on somewhere
+    assert "settings:auto_send_list" not in data
+
+    await arm_chat(harness, chat)
+    other = await _second_chat(harness, user, make_chat, make_contact, "Synthetic Boris")
+    await arm_chat(harness, other)
+    screen = await _settings_screen(harness, user)
+    assert "⏱ Auto-send: 2 chats · cancel window 2 min" in screen.text
+    data = callback_datas(screen.reply_markup)
+    assert "settings:auto_send_off_all" in data and "settings:auto_send_list" in data
+
+
+async def test_us3_the_window_is_chosen_from_five_values_and_applies_to_the_next_card(
+    harness: US2Harness,
+    clock: FrozenClock,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, chat, contact = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await arm_chat(harness, chat)
+    await _press(harness, user, "settings:auto_send_window")
+    choice = harness.edits()[-1]
+    assert callback_datas(choice.reply_markup) == [
+        f"autowin:{seconds}" for seconds in (60, 120, 300, 600, 900)
+    ]
+    assert button_texts(choice.reply_markup) == ["1 min", "✅ 2 min", "5 min", "10 min", "15 min"]
+
+    await _press(harness, user, "autowin:300")
+    assert (await _user(harness, user)).auto_send_window_s == 300
+    assert "cancel window 5 min" in (harness.edits()[-1].text or "")
+
+    await harness.incoming(user, chat, contact, "Synthetic question: when is the report due?")
+    await harness.tick()
+    async with harness.session_factory() as session:
+        due = await session.scalar(select(Draft.auto_send_due_at))
+    assert due == clock() + timedelta(seconds=300)
+
+
+@pytest.mark.parametrize("seconds", [30, 59, 61, 1000, 0, -120])
+async def test_us3_other_windows_are_refused(
+    harness: US2Harness,
+    seconds: int,
+    make_user: MakeUser,
+    make_chat: MakeChat,
+    make_contact: MakeContact,
+) -> None:
+    user, _, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await _press(harness, user, f"autowin:{seconds}")
+    assert (await _user(harness, user)).auto_send_window_s == 120
+    assert "Choose a cancel window between 1 and 15 minutes." in _popups(harness)
+
+
+async def _user(harness: US2Harness, user: User) -> User:
+    async with harness.session_factory() as session:
+        row = await session.get(User, user.id)
+        assert row is not None
+        await session.refresh(row)
+        return row
+
+
+async def test_us3_off_everywhere_is_one_tap_from_settings(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, chat, contact = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    other = await _second_chat(harness, user, make_chat, make_contact, "Synthetic Boris")
+    await arm_chat(harness, chat)
+    await arm_chat(harness, other)
+    await harness.incoming(user, chat, contact, "Synthetic question: when is the report due?")
+    await harness.tick()
+    assert "⏱ Will be sent automatically at" in harness.messages()[-1].text
+
+    screen = await _settings_screen(harness, user)  # tap 0: the screen
+    assert "settings:auto_send_off_all" in callback_datas(screen.reply_markup)
+    await _press(harness, user, "settings:auto_send_off_all")  # tap 1: done (SC-005)
+
+    assert not (await _chat(harness, chat)).auto_send
+    assert not (await _chat(harness, other)).auto_send
+    (record,) = await _activities(harness, user, ActivityKind.auto_send_off)
+    assert record.meta_json["all"] is True
+    async with harness.session_factory() as session:
+        draft = await session.scalar(select(Draft))
+    assert draft is not None and draft.auto_send_stop == AutoSendStop.disabled
+    card_edits = [
+        e for e in harness.edits() if "Synthetic reply about the report" in (e.text or "")
+    ]
+    assert card_edits and "⏱ Will be sent automatically at" not in (card_edits[-1].text or "")
+    assert "⏹ Auto-send is off everywhere (2 chats)." in _popups(harness)
+    assert "⏱ Auto-send: off · cancel window 2 min" in (harness.edits()[-1].text or "")
+    harness.clock.advance(hours=1)
+    await harness.tick()
+    assert harness.gateway.send_text_calls == []
+
+
+async def test_us3_off_everywhere_with_nothing_on_records_nothing(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, _, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await _press(harness, user, "settings:auto_send_off_all")
+    assert await _activities(harness, user, ActivityKind.auto_send_off) == []
+
+
+async def test_us3_the_list_shows_exactly_the_chats_with_auto_send_on_and_their_rates(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, anna, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    boris = await _second_chat(harness, user, make_chat, make_contact, "Synthetic Boris")
+    await _second_chat(harness, user, make_chat, make_contact, "Synthetic Clara")  # stays off
+    await arm_chat(harness, anna)
+    await arm_chat(harness, boris)
+    await seed_decisions(harness, user, anna, unchanged=13, edited=7)
+
+    await _press(harness, user, "settings:auto_send_list")
+    listing = harness.messages()[-1]
+    assert listing.text.startswith("⏱ Chats with auto-send on:")
+    assert "• Synthetic Anna · 13/20" in listing.text
+    assert "• Synthetic Boris · –" in listing.text
+    assert "Clara" not in listing.text
+    assert callback_datas(listing.reply_markup) == [f"chatcfg:{anna.id}", f"chatcfg:{boris.id}"]
+
+
+async def test_us3_nothing_in_settings_or_chats_turns_auto_send_on_for_several_chats(
+    harness: US2Harness, make_user: MakeUser, make_chat: MakeChat, make_contact: MakeContact
+) -> None:
+    user, _, _ = await _setup(harness.session_factory, make_user, make_chat, make_contact)
+    await _second_chat(harness, user, make_chat, make_contact, "Synthetic Boris")
+    screen = await _settings_screen(harness, user)
+    await harness.feed(text_update(user.telegram_control_chat_id, "/chats"))
+    chats = harness.messages()[-1]
+    callbacks = callback_datas(screen.reply_markup) + callback_datas(chats.reply_markup)
+    # Auto-send is only ever turned on through a confirmation that names one chat.
+    assert not [c for c in callbacks if c.startswith(("autoconfirm:", "chatauto:", "autooffer:"))]
+    for callback in callbacks:
+        if callback.startswith(("settings:", "autowin:")):
+            await _press(harness, user, callback)
+    async with harness.session_factory() as session:
+        on = (await session.scalars(select(WorkChat).where(WorkChat.auto_send.is_(True)))).all()
+    assert on == []

@@ -66,7 +66,7 @@ from scribe.retention.pending_credentials import register_pending_credentials_jo
 from scribe.retention.purge import register_purge_job
 from scribe.scheduling.deadlines import register_review_deadlines
 from scribe.scheduling.scheduler import DueTurnsProcessor, Scheduler
-from scribe.sending.auto_send import AutoSender
+from scribe.sending.auto_send import AutoSendAdvisor, AutoSender
 from scribe.telegram.client_pool import ClientPool
 from scribe.telegram.control_bot.bot import create_bot, create_dispatcher
 from scribe.telegram.control_bot.connect_flow import (
@@ -198,6 +198,8 @@ class Service:
         # specs/009: chats the agent read or answered are marked unread right afterwards.
         self.unread_marker = UnreadMarker(self.session_factory, self.pool)
         self.pool.on_unread_mark_cleared(self.unread_marker.handle_unread_mark_cleared)
+        # specs/014: the offer of auto-send and the suggestion to turn it off, after a decision.
+        self.auto_send_advisor = AutoSendAdvisor(self.session_factory, self.bot, clock=self._clock)
         self.dispatcher: Dispatcher = create_dispatcher(
             session_factory=self.session_factory,
             settings=settings,
@@ -208,6 +210,7 @@ class Service:
             clock=self._clock,
             telegram_login=self.telegram_login,
             unread_marker=self.unread_marker,
+            auto_send_advisor=self.auto_send_advisor,
         )
         await self.pool.start_all()
         self._tasks.append(asyncio.create_task(self._run_bot(), name="control-bot"))
@@ -268,7 +271,7 @@ class Service:
                 clock=self._clock,
                 marker=self.unread_marker,
                 commitments=self.commitments,
-                advisor=None,
+                advisor=self.auto_send_advisor,
             )
         )
         # Steps 2-3: one reminder, then expiry (control chat only; never sends to a contact).

@@ -4,16 +4,29 @@ the outdated card, reminders and expiry. Synthetic data only."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from aiogram.methods import EditMessageText, SendMessage
 from sqlalchemy import select
 
-from scribe.db.models import AutoSendSource, ConversationTurn, DraftDecision, User, WorkChat
+from scribe.db.models import (
+    AutoSendSource,
+    Contact,
+    ConversationTurn,
+    DraftDecision,
+    DraftDecisionKind,
+    DraftState,
+    TurnState,
+    User,
+    WorkChat,
+)
+from scribe.db.repos import decisions as decisions_repo
+from scribe.db.repos import drafts as drafts_repo
+from scribe.db.repos import turns as turns_repo
 from scribe.intake.events import ChatEventHandler
 from scribe.scheduling.deadlines import register_review_deadlines
-from scribe.sending.auto_send import AutoSender
+from scribe.sending.auto_send import AutoSendAdvisor, AutoSender
 from scribe.telegram.gateway import OutgoingEvent, ReadEvent
 from tests.integration.us1_support import US1Harness, next_message_id
 
@@ -37,6 +50,8 @@ class US2Harness(US1Harness):
         self.intake.on_draft_outdated(self.presenter.show_outdated)
         register_review_deadlines(self.scheduler, self.presenter, clock=self.clock)
         # specs/014: the one scheduler step that can send, as in the service.
+        self.advisor = AutoSendAdvisor(self.session_factory, self.bot, clock=self.clock)
+        self.dispatcher["auto_send_advisor"] = self.advisor
         self.auto_sender = AutoSender(
             self.session_factory,
             self.gateway,
@@ -44,6 +59,7 @@ class US2Harness(US1Harness):
             clock=self.clock,
             marker=self.marker,
             commitments=None,
+            advisor=self.advisor,
         )
         self.scheduler.on_auto_sends(self.auto_sender)
 
@@ -126,3 +142,82 @@ async def decision_rows(harness: US2Harness, chat: WorkChat) -> list[DraftDecisi
             .order_by(DraftDecision.at, DraftDecision.created_at)
         )
         return list(result.scalars().all())
+
+
+async def seed_decisions(
+    harness: US2Harness,
+    user: User,
+    chat: WorkChat,
+    *,
+    unchanged: int = 0,
+    edited: int = 0,
+    rejected: int = 0,
+    at: datetime | None = None,
+) -> None:
+    """``draft_decisions`` rows without drafts (the rate behind the offer), all at ``at``."""
+    moment = at or harness.clock()
+    async with harness.session_factory() as session:
+        for kind, count in (
+            (DraftDecisionKind.sent_unchanged, unchanged),
+            (DraftDecisionKind.sent_edited, edited),
+            (DraftDecisionKind.rejected, rejected),
+        ):
+            for _ in range(count):
+                await decisions_repo.record(
+                    session,
+                    user_id=user.id,
+                    work_chat_id=chat.id,
+                    draft_id=None,
+                    decision=kind,
+                    during_auto_send=False,
+                    at=moment,
+                )
+        await session.commit()
+
+
+async def seed_auto_drafts(
+    harness: US2Harness,
+    user: User,
+    chat: WorkChat,
+    contact: Contact,
+    outcomes: list[tuple[DraftDecisionKind, ...]],
+) -> None:
+    """One finished draft per entry of ``outcomes`` (oldest first), each with its decision rows
+    written ``during_auto_send`` (the sample behind the suggestion to turn auto-send off)."""
+    now = harness.clock()
+    async with harness.session_factory() as session:
+        for index, kinds in enumerate(outcomes):
+            moment = now - timedelta(minutes=len(outcomes) - index)
+            turn = await turns_repo.create_turn(
+                session,
+                user.id,
+                work_chat_id=chat.id,
+                contact_id=contact.id,
+                first_message_id=None,
+                arrived_at=moment,
+                delay_s=0,
+                due_at=moment,
+            )
+            turn.state = TurnState.rejected
+            draft = await drafts_repo.create_draft(
+                session,
+                user.id,
+                conversation_turn_id=turn.id,
+                text="synthetic draft",
+                output_json={},
+                prepared_at=moment,
+            )
+            await drafts_repo.finalize(
+                session, user.id, draft.id, DraftState.sent, at=moment, approved_by_user_at=moment
+            )
+            for kind in kinds:
+                await decisions_repo.record(
+                    session,
+                    user_id=user.id,
+                    work_chat_id=chat.id,
+                    draft_id=draft.id,
+                    decision=kind,
+                    during_auto_send=True,
+                    at=moment,
+                )
+        await session.commit()

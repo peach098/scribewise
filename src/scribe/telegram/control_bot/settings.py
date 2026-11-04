@@ -108,6 +108,7 @@ from scribe.db.models import (
     MAX_DELAY_S,
     ActivityKind,
     ActivityRecord,
+    AutoSendOfferState,
     AutoSendSource,
     AutoSendStop,
     ChatKind,
@@ -141,7 +142,14 @@ from scribe.i18n import (
 )
 from scribe.intake.waiting import replan_waiting_turns
 from scribe.logging import get_logger
-from scribe.sending.auto_send import OFFER_WINDOW, set_chat_auto_send
+from scribe.sending.auto_send import (
+    AUTO_SEND_WINDOWS,
+    OFFER_WINDOW,
+    count_auto_send_chats,
+    set_chat_auto_send,
+    turn_off_everywhere,
+    window_label,
+)
 from scribe.style.grammatical_gender import GRAMMATICAL_GENDERS
 from scribe.telegram.control_bot import (
     account_command,
@@ -196,6 +204,9 @@ WORK_ACCOUNT = "work_account"  # settings:work_account (specs/008 contracts/cont
 CHAT_EXCLUDED_STATUS = Msg("status.chat_excluded")
 WORK_ACCOUNT_OFF_STATUS = Msg("status.work_account_off")
 MARK_UNREAD = "mark_unread"  # settings:mark_unread (specs/009 contracts/control-chat.md)
+AUTO_SEND_WINDOW = "auto_send_window"  # settings:auto_send_window (specs/014): the window choice
+AUTO_SEND_OFF_ALL = "auto_send_off_all"  # settings:auto_send_off_all (specs/014 SC-005)
+AUTO_SEND_LIST = "auto_send_list"  # settings:auto_send_list (specs/014 FR-019)
 GENDER = "gender"  # settings:gender (issue #46): the grammatical gender buttons
 
 
@@ -388,8 +399,20 @@ def work_account_line(user: User, excluded: int | None, lang: str) -> str:
     return t("settings.work_account.on", lang, n=excluded)
 
 
-def settings_text(user: User, excluded: int | None = None) -> str:
-    """``excluded``: the number of excluded chats for the work account line (specs/008)."""
+def auto_send_line(user: User, chats: int) -> str:
+    """The /settings line of auto-send (specs/014): the chats it is on for and the cancel window."""
+    window = window_label(user.auto_send_window_s, user.language)
+    if chats == 0:
+        return t("settings.auto_send_off", user.language, window=window)
+    return t("settings.auto_send", user.language, n=chats, window=window)
+
+
+def settings_text(
+    user: User, excluded: int | None = None, auto_send_chats: int | None = None
+) -> str:
+    """``excluded``: the number of excluded chats for the work account line (specs/008);
+    ``auto_send_chats``: the number of chats auto-send is on for (specs/014; ``None``: the line is
+    left out, as in the short confirmations)."""
     lang = user.language
     state = t(f"settings.state.{user.state.value}", lang)
     delay = delay_label(user.delay_min_s, user.delay_max_s, lang)
@@ -413,6 +436,7 @@ def settings_text(user: User, excluded: int | None = None) -> str:
             t("settings.mark_unread", lang, state=t(f"settings.mark_unread_state.{mark}", lang)),
             work_account_line(user, excluded, lang),
             t("settings.gender", lang, value=gender_label(user.grammatical_gender, lang)),
+            *([auto_send_line(user, auto_send_chats)] if auto_send_chats is not None else []),
             "",
             t("settings.per_chat", lang),
         ]
@@ -424,10 +448,12 @@ def settings_keyboard(
     search_earlier: bool = True,
     work_account: bool = False,
     mark_unread: bool = True,
+    auto_send_chats: int = 0,
 ) -> InlineKeyboardMarkup:
     """``search_earlier``: the current ``users.search_earlier_messages`` (specs/004);
     ``work_account``: the current ``users.work_account`` (specs/008); ``mark_unread``: the
-    current ``users.mark_unread`` (specs/009)."""
+    current ``users.mark_unread`` (specs/009); ``auto_send_chats``: the number of chats auto-send
+    is on for (specs/014), with some the list and turn-off-everywhere buttons are shown."""
     search = "btn.search_earlier_off" if search_earlier else "btn.search_earlier_on"
     mode = "btn.work_account_off" if work_account else "btn.work_account_on"
     mark = "btn.mark_unread_off" if mark_unread else "btn.mark_unread_on"
@@ -446,6 +472,29 @@ def settings_keyboard(
             [button(t(mark, lang), format_callback("settings", MARK_UNREAD))],
             [button(t(mode, lang), format_callback("settings", WORK_ACCOUNT))],
             [button(t("btn.gender", lang), format_callback("settings", GENDER))],
+            [
+                button(
+                    t("btn.auto_send_window", lang), format_callback("settings", AUTO_SEND_WINDOW)
+                )
+            ],
+            *(
+                [
+                    [
+                        button(
+                            t("btn.auto_send_list", lang),
+                            format_callback("settings", AUTO_SEND_LIST),
+                        )
+                    ],
+                    [
+                        button(
+                            t("btn.auto_send_off_all", lang),
+                            format_callback("settings", AUTO_SEND_OFF_ALL),
+                        )
+                    ],
+                ]
+                if auto_send_chats > 0
+                else []
+            ),
         ]
     )
 
@@ -575,6 +624,9 @@ def chat_settings_keyboard(
         rows.append(
             [button(t("btn.chat_auto_send_on", lang), format_callback("chatauto", chat.id, "on"))]
         )
+        if chat.auto_send_offer == AutoSendOfferState.opted_out:  # FR-017: take it back
+            reset = format_callback("chatauto", chat.id, "reset")
+            rows.append([button(t("btn.chat_auto_send_reset", lang), reset)])
     if _work_account_screen(chat, work_account):
         if chats_repo.is_excluded(chat):
             label, value = "btn.chat_include", "on"
@@ -631,14 +683,32 @@ async def settings_command(
         await message.answer(t("common.not_set_up", lang))
         return
     current = await _fresh_user(session_factory, user) or user
-    text = settings_text(current, await _excluded_count(session_factory, current))
-    await message.answer(text, reply_markup=_settings_keyboard_of(current))
+    text, markup = await _settings_view(session_factory, current)
+    await message.answer(text, reply_markup=markup)
 
 
-def _settings_keyboard_of(user: User) -> InlineKeyboardMarkup:
+def _settings_keyboard_of(user: User, auto_send_chats: int = 0) -> InlineKeyboardMarkup:
     return settings_keyboard(
-        user.language, user.search_earlier_messages, user.work_account, user.mark_unread
+        user.language,
+        user.search_earlier_messages,
+        user.work_account,
+        user.mark_unread,
+        auto_send_chats,
     )
+
+
+async def _auto_send_count(session_factory: async_sessionmaker[AsyncSession], user: User) -> int:
+    async with session_factory() as session:
+        return await count_auto_send_chats(session, user.id)
+
+
+async def _settings_view(
+    session_factory: async_sessionmaker[AsyncSession], user: User
+) -> tuple[str, InlineKeyboardMarkup]:
+    """The /settings message and its keyboard for the stored ``user``."""
+    excluded = await _excluded_count(session_factory, user)
+    chats = await _auto_send_count(session_factory, user)
+    return settings_text(user, excluded, chats), _settings_keyboard_of(user, chats)
 
 
 async def _excluded_count(
@@ -694,6 +764,167 @@ async def _toggle_mark_unread(
     await _rerender_settings(callback, bot, stored, session_factory)
 
 
+# --- specs/014: the cancel window, auto-send off everywhere, the chats it is on for --------------
+
+
+def window_keyboard(current: int, lang: str) -> InlineKeyboardMarkup:
+    """The cancel window choices (``autowin:<seconds>``); the current one is ticked."""
+    return keyboard(
+        [
+            [
+                button(
+                    ("✅ " if seconds == current else "") + window_label(seconds, lang),
+                    format_callback("autowin", seconds),
+                )
+                for seconds in AUTO_SEND_WINDOWS
+            ]
+        ]
+    )
+
+
+async def _edit_or_send(
+    callback: CallbackQuery, bot: Bot, user: User, text: str, markup: InlineKeyboardMarkup
+) -> None:
+    """Turn the tapped message into ``text``; a new message when it cannot be edited."""
+    chat_id = user.telegram_control_chat_id
+    if callback.message is not None:
+        try:
+            await bot.edit_message_text(
+                text, chat_id=chat_id, message_id=callback.message.message_id, reply_markup=markup
+            )
+            return
+        except Exception as exc:  # message too old, not a text message, ...
+            log.info("settings_edit_failed", error=type(exc).__name__)
+    await bot.send_message(chat_id, text, reply_markup=markup)
+
+
+async def _show_window_choice(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """``settings:auto_send_window``: the /settings message becomes the choice of 1, 2, 5, 10 or
+    15 minutes; a press (``autowin:<seconds>``) stores it and renders /settings back."""
+    current = await _fresh_user(session_factory, user) or user
+    await callback.answer()
+    await _edit_or_send(
+        callback,
+        bot,
+        current,
+        t("settings.auto_send_window_prompt", current.language),
+        window_keyboard(current.auto_send_window_s, current.language),
+    )
+
+
+async def auto_send_window_callback(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User | None,
+    session_factory: async_sessionmaker[AsyncSession],
+    lang: Lang,
+    clock: Clock = utcnow,
+) -> None:
+    """``autowin:<seconds>`` (FR-007): only 60, 120, 300, 600 and 900 s are accepted. The window
+    applies to cards posted from now on; running countdowns keep the time their card shows."""
+    if user is None:
+        await callback.answer(t("common.not_set_up", lang))
+        return
+    try:
+        seconds = int(parse_callback(callback.data).entity_id)
+    except (InvalidCallbackData, ValueError):
+        seconds = 0
+    if seconds not in AUTO_SEND_WINDOWS:
+        await callback.answer(t("autosend.window_invalid", lang), show_alert=True)
+        return
+    current = await _fresh_user(session_factory, user) or user
+    stored = await _save_user(
+        session_factory, current, clock, replan=False, auto_send_window_s=seconds
+    )
+    if stored is None:
+        await callback.answer(t("common.not_set_up", lang))
+        return
+    await callback.answer(t("alert.saved", stored.language))
+    await _rerender_settings(callback, bot, stored, session_factory)
+
+
+async def _auto_send_off_all(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+) -> None:
+    """``settings:auto_send_off_all`` (FR-010, SC-005): one tap turns auto-send off in every chat,
+    stops every running countdown and renders the cards of those drafts as ordinary ones."""
+    async with session_factory() as session:
+        chats = await count_auto_send_chats(session, user.id)
+        stopped = await turn_off_everywhere(session, user_id=user.id, now=clock())
+        await session.commit()
+    presenter = DraftPresenter(bot, session_factory, clock=clock)
+    for draft_id in stopped:
+        await presenter.show_manual(user.id, draft_id, (AutoSendStop.disabled.value,))
+    current = await _fresh_user(session_factory, user) or user
+    if chats:
+        await callback.answer(t("autosend.off_all_done", current.language, n=chats))
+    else:
+        await callback.answer()
+    await _rerender_settings(callback, bot, current, session_factory)
+
+
+async def _auto_send_list(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+) -> None:
+    """``settings:auto_send_list`` (FR-019): the chats auto-send is on for, each with its share of
+    drafts sent unchanged in the last 30 days and a button to its settings."""
+    current = await _fresh_user(session_factory, user) or user
+    lang = current.language
+    now = clock()
+    async with session_factory() as session:
+        chats = list(
+            (
+                await session.execute(
+                    select(WorkChat).where(
+                        WorkChat.user_id == current.id, WorkChat.auto_send.is_(True)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        chats.sort(key=lambda chat: (chat.title or "").casefold())  # titles are encrypted at rest
+        rates = {
+            chat.id: await decisions_repo.chat_rate(
+                session, user_id=current.id, work_chat_id=chat.id, since=now - OFFER_WINDOW
+            )
+            for chat in chats
+        }
+    await callback.answer()
+    if not chats:
+        await bot.send_message(current.telegram_control_chat_id, t("autosend.list_empty", lang))
+        return
+    untitled = t("common.chat", lang)
+    rows = []
+    for chat in chats:
+        rate = rates[chat.id]
+        share = f"{rate.unchanged}/{rate.total}" if rate.total else "–"
+        rows.append(f"• {chat.title or untitled} · {share}")
+    await bot.send_message(
+        current.telegram_control_chat_id,
+        "\n".join([t("autosend.list_header", lang), *rows]),
+        reply_markup=keyboard(
+            [
+                [button(chat.title or untitled, format_callback("chatcfg", chat.id))]
+                for chat in chats
+            ]
+        ),
+    )
+
+
 async def _rerender_settings(
     callback: CallbackQuery,
     bot: Bot,
@@ -702,8 +933,7 @@ async def _rerender_settings(
 ) -> None:
     """Edit the /settings message in place, or send a fresh one when it cannot be edited."""
     chat_id = stored.telegram_control_chat_id
-    excluded = await _excluded_count(session_factory, stored)
-    text, markup = settings_text(stored, excluded), _settings_keyboard_of(stored)
+    text, markup = await _settings_view(session_factory, stored)
     if callback.message is not None:
         try:
             await bot.edit_message_text(
@@ -741,6 +971,15 @@ async def settings_menu(
         return
     if item == MARK_UNREAD:
         await _toggle_mark_unread(callback, bot, user, session_factory, clock)
+        return
+    if item == AUTO_SEND_WINDOW:
+        await _show_window_choice(callback, bot, user, session_factory)
+        return
+    if item == AUTO_SEND_OFF_ALL:
+        await _auto_send_off_all(callback, bot, user, session_factory, clock)
+        return
+    if item == AUTO_SEND_LIST:
+        await _auto_send_list(callback, bot, user, session_factory, clock)
         return
     await callback.answer()
     chat_id = user.telegram_control_chat_id
@@ -871,10 +1110,8 @@ async def work_account_callback(
             note = t("settings.work_account_now_off", lang, n=result.paused_chats)
         await callback.answer()
         await bot.send_message(chat_id, note)
-    excluded = await _excluded_count(session_factory, current)
-    await bot.send_message(
-        chat_id, settings_text(current, excluded), reply_markup=_settings_keyboard_of(current)
-    )
+    text, markup = await _settings_view(session_factory, current)
+    await bot.send_message(chat_id, text, reply_markup=markup)
 
 
 async def _close_buttons(bot: Bot, callback: CallbackQuery) -> None:
@@ -1119,7 +1356,11 @@ async def language_callback(
         except Exception as exc:  # unchanged markup, message too old, ...
             log.info("language_keyboard_edit_failed", error=type(exc).__name__)
     await set_chat_commands(bot, chat_id, new_lang)
-    await bot.send_message(chat_id, _saved_text(stored), reply_markup=_settings_keyboard_of(stored))
+    await bot.send_message(
+        chat_id,
+        _saved_text(stored),
+        reply_markup=_settings_keyboard_of(stored, await _auto_send_count(session_factory, stored)),
+    )
 
 
 async def toggle_day_callback(
@@ -1580,6 +1821,16 @@ async def _auto_send_callback(
                 reply_markup=confirm_keyboard(chat.id, AutoSendSource.manual, lang),
             )
         return
+    if extra == "reset":  # "Don't offer for this chat" taken back (FR-017)
+        async with session_factory() as session:
+            stored = await chats_repo.get_work_chat(session, user.id, chat.id)
+            if stored is not None and stored.auto_send_offer == AutoSendOfferState.opted_out:
+                stored.auto_send_offer = AutoSendOfferState.none
+                stored.auto_send_offer_not_before = None
+            await session.commit()
+        await callback.answer(t("autosend.offer_reset", lang))
+        await _send_chat_settings(bot, session_factory, user, chat.id, clock)
+        return
     if extra != "off":
         await callback.answer()
         return
@@ -1970,6 +2221,7 @@ def create_router() -> Router:
     )
     router.callback_query.register(settings_menu, _action("settings"))
     router.callback_query.register(toggle_day_callback, _action("setday"))
+    router.callback_query.register(auto_send_window_callback, _action("autowin"))  # specs/014
     router.callback_query.register(time_zone_callback, _action("settz"), idle)
     router.callback_query.register(language_callback, _action("setlang"), idle)
     # Issue #46: also the one-off question, which may arrive while another flow is open.
