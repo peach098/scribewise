@@ -9,7 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
-from scribe.config import Settings
+from scribe.config import Settings, payments_available
 
 KEY_B64 = base64.b64encode(b"\x00" * 32).decode()
 
@@ -318,3 +318,36 @@ def test_keyring_from_settings_holds_current_and_previous_keys() -> None:
     assert ring.decrypt(old_token, "messages:text") == "synthetic"
     assert ring.encrypt("synthetic").startswith("e2:v2:")
     assert keyring_from_settings(_settings(encryption_strict=True)).strict is True
+
+
+def test_payments_defaults() -> None:
+    s = _settings()
+    assert s.payments_enabled is False
+    assert s.stars_price is None
+    assert s.telegram_test_env is False
+
+
+@pytest.mark.parametrize("price", [0, 10001, -5])
+def test_stars_price_out_of_range_rejected(price: int) -> None:
+    with pytest.raises(ValidationError):
+        _settings(stars_price=price)
+
+
+def test_stars_price_bounds_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SCRIBE_STARS_PRICE", "10000")
+    assert _settings().stars_price == 10000
+    assert _settings(stars_price=1).stars_price == 1
+
+
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({"access_gate": True, "payments_enabled": True, "stars_price": 150}, True),
+        ({"access_gate": False, "payments_enabled": True, "stars_price": 150}, False),
+        ({"access_gate": True, "payments_enabled": False, "stars_price": 150}, False),
+        ({"access_gate": True, "payments_enabled": True}, False),
+        ({}, False),
+    ],
+)
+def test_payments_available(overrides: dict[str, Any], expected: bool) -> None:
+    assert payments_available(_settings(**overrides)) is expected

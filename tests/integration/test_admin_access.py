@@ -707,3 +707,92 @@ async def test_access_stats_counts_applications(
     assert "applications approved / rejected (last 7 days): 1 / 1" in lines
     code, out, _ = await _run(["access", "stats", "--days", "30"], session_factory, capsys, clock)
     assert "applications approved / rejected (last 30 days): 1 / 2" in out.splitlines()
+
+
+# --- Stars subscriptions in the access commands (specs/015 T042) --------------------------------
+
+
+async def _stars_period(
+    db: AsyncSession, clock: FrozenClock, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tests.payments_fakes import credit_first
+
+    await credit_first(db, telegram_id=TESTER, charge_id="charge-adm-1", at=clock.now)
+    await db.commit()
+    capsys.readouterr()  # the credit logs a line to stdout; not command output
+
+
+async def test_sub_list_and_access_show_print_the_source_once_stars_are_in_use(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
+    clock: FrozenClock,
+    settings: Settings,
+) -> None:
+    await _run(["sub", "grant", str(OTHER), "--days", "5"], session_factory, capsys, clock)
+    await _stars_period(db_session, clock, capsys)
+
+    code, out, _ = await _run(["sub", "list"], session_factory, capsys, clock)
+
+    assert code == 0
+    rows = sorted(line.split() for line in out.splitlines())
+    assert rows == [
+        [str(TESTER), "active", "stars", "2026-10-14", "2026-11-13"],
+        [str(OTHER), "active", "operator", "2026-10-14", "2026-10-19"],
+    ] or rows == sorted(
+        [
+            [str(TESTER), "active", "stars", "2026-10-14", "2026-11-13"],
+            [str(OTHER), "active", "operator", "2026-10-14", "2026-10-19"],
+        ]
+    )
+
+    code = await admin.run(
+        ["access", "show", str(TESTER)], session_factory, clock=clock, settings=settings
+    )
+    lines = capsys.readouterr()[0].splitlines()
+    assert code == 0
+    assert "subscription active stars 2026-10-14 2026-11-13" in lines
+
+
+async def test_sub_extend_and_end_leave_stars_rows_alone_and_point_to_pay(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
+    clock: FrozenClock,
+) -> None:
+    await _stars_period(db_session, clock, capsys)
+    hint = "stars subscription running: use `pay cancel`/`pay refund`"
+
+    code, out, err = await _run(["sub", "end", str(TESTER)], session_factory, capsys, clock)
+    assert code == 1 and "no active or scheduled subscription" in err and hint in err
+    code, out, err = await _run(
+        ["sub", "extend", str(TESTER), "--days", "3"], session_factory, capsys, clock
+    )
+    assert code == 1 and hint in err
+
+    await _run(["sub", "grant", str(TESTER), "--days", "2"], session_factory, capsys, clock)
+    code, out, _ = await _run(["sub", "end", str(TESTER)], session_factory, capsys, clock)
+    assert code == 0 and hint in out.splitlines()
+
+    db_session.expire_all()
+    rows = (await db_session.scalars(select(Subscription).order_by(Subscription.created_at))).all()
+    by_source = {row.source.value: row for row in rows}
+    assert by_source["stars"].cancelled_at is None  # untouched
+    assert by_source["operator"].cancelled_at == clock.now
+    assert by_source["stars"].ends_at == clock.now + timedelta(days=30)
+
+
+async def test_access_stats_counts_paying_subscribers(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    capsys: pytest.CaptureFixture[str],
+    clock: FrozenClock,
+) -> None:
+    _, out, _ = await _run(["access", "stats"], session_factory, capsys, clock)
+    assert not any(line.startswith("paying subscribers") for line in out.splitlines())
+
+    await _stars_period(db_session, clock, capsys)
+    _, out, _ = await _run(["access", "stats"], session_factory, capsys, clock)
+    lines = out.splitlines()
+    assert "paying subscribers: 1" in lines
+    assert lines.index("paying subscribers: 1") == lines.index("subscriptions active: 1") + 1

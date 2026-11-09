@@ -15,6 +15,10 @@
 - decided ``beta_applications`` 30 days after the decision (pending ones stay until decided),
   and abandoned beta application flows: ``bot_fsm_state`` rows in ``ApplyStates`` (holding an
   unsent use case) untouched for 24 h (specs/005 FR-007, FR-029, research Q12).
+- Payments (specs/015 data-model.md "Purge"): ``payments`` 1096 days after ``owner_deleted_at``
+  (the minimal record kept after ``/delete_my_data``; rows of existing accounts stay),
+  ``stars_subscriptions`` that ended and have no payment left, and ``payment_offers`` older than
+  7 days that no subscription references.
 - ``llm_spend`` rows (issue #67) whose UTC ``day`` is older than ``llm_spend_retention_days``
   (90 by default).
 - ``jira_comment_cursor`` rows 30 days after the comment was last changed (specs/003 J13): such
@@ -66,8 +70,12 @@ from scribe.db.models import (
     JiraCommentCursor,
     LLMSpend,
     Message,
+    Payment,
+    PaymentOffer,
     ProfileState,
     RefusedContact,
+    StarsSubscription,
+    StarsSubState,
     StyleProfile,
     TurnState,
     User,
@@ -88,6 +96,8 @@ JOB_SCHEDULE = Daily(at=time(3, 0))  # UTC, low-traffic hour
 DERIVED_RETENTION = timedelta(days=30)
 REFUSED_CONTACT_RETENTION = timedelta(days=30)
 ACCESS_EVENT_RETENTION = timedelta(days=365)
+PAYMENT_RETENTION = timedelta(days=1096)  # 3 years after owner_deleted_at (specs/015 FR-020)
+OFFER_RETENTION = timedelta(days=7)  # an unused offer and its invoice link (specs/015 research P2)
 APPLICATION_RETENTION = timedelta(days=30)  # after the decision
 APPLY_FLOW_RETENTION = timedelta(hours=24)  # an unsent use case in the FSM
 APPLY_STATE_PREFIX = f"{ApplyStates.__name__}:"  # aiogram stores "ApplyStates:use_case"
@@ -117,6 +127,9 @@ class PurgeStats:
     contacts_deleted: int = 0
     llm_spend_deleted: int = 0
     decisions_deleted: int = 0
+    payments_deleted: int = 0
+    stars_subscriptions_deleted: int = 0
+    offers_deleted: int = 0
 
 
 def _rowcount(result: object) -> int:
@@ -182,6 +195,22 @@ async def purge_messages(
             )
         )
         decisions = await decisions_repo.purge_older_than(session, now - DECISION_RETENTION)
+        # Payments (specs/015): the record of a deleted owner, then what has nothing left.
+        payments = await session.execute(
+            delete(Payment).where(Payment.owner_deleted_at < now - PAYMENT_RETENTION)
+        )
+        stars = await session.execute(
+            delete(StarsSubscription).where(
+                StarsSubscription.state == StarsSubState.ended,
+                ~exists().where(Payment.stars_subscription_id == StarsSubscription.id),
+            )
+        )
+        offers = await session.execute(
+            delete(PaymentOffer).where(
+                PaymentOffer.created_at < now - OFFER_RETENTION,
+                ~exists().where(StarsSubscription.offer_id == PaymentOffer.id),
+            )
+        )
         applications = await session.execute(
             delete(BetaApplication).where(BetaApplication.decided_at < now - APPLICATION_RETENTION)
         )
@@ -212,6 +241,9 @@ async def purge_messages(
         contacts_deleted=_rowcount(contacts),
         llm_spend_deleted=_rowcount(spend),
         decisions_deleted=decisions,
+        payments_deleted=_rowcount(payments),
+        stars_subscriptions_deleted=_rowcount(stars),
+        offers_deleted=_rowcount(offers),
     )
     log.info("retention_purge", **asdict(stats))
     return stats

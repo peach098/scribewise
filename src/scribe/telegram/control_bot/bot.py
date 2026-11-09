@@ -23,6 +23,8 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware, Bot, Dispatcher, Router
+from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.client.telegram import TelegramAPIServer
 from aiogram.filters import Command
 from aiogram.fsm.storage.base import BaseStorage
 from aiogram.types import CallbackQuery, Message, TelegramObject
@@ -34,6 +36,8 @@ from scribe.clock import utcnow
 from scribe.config import Settings
 from scribe.db.repos import users as users_repo
 from scribe.i18n import Lang, language_for_code, normalize_lang
+from scribe.payments import bot as payments_bot
+from scribe.payments import support as payments_support
 from scribe.telegram.control_bot import (
     add_chats,
     auto_send_flow,
@@ -138,6 +142,8 @@ def create_dispatcher(
     # router.
     base = [
         apply.create_router(),
+        payments_bot.create_router(),  # specs/015: pay:* buttons and payment updates
+        payments_support.create_router(),  # specs/015: /paysupport, /terms
         create_base_router(),
         telegram_command.create_router(),
         connect_flow.create_router(),
@@ -152,5 +158,16 @@ def create_dispatcher(
 
 
 def create_bot(settings: Settings) -> Bot:
-    """Fails fast (``TokenValidationError``) on a malformed token."""
-    return Bot(token=settings.bot_token.get_secret_value())
+    """Fails fast (``TokenValidationError``) on a malformed token. With
+    ``SCRIBE_TELEGRAM_TEST_ENV`` the bot talks to Telegram's test server, where Stars are free
+    (specs/015 quickstart.md); the service and ``scribe.admin`` both build it here."""
+    token = settings.bot_token.get_secret_value()
+    if not settings.telegram_test_env:
+        return Bot(token=token)
+    session = AiohttpSession(
+        api=TelegramAPIServer(
+            base="https://api.telegram.org/bot{token}/test/{method}",
+            file="https://api.telegram.org/file/bot{token}/test/{path}",
+        )
+    )
+    return Bot(token=token, session=session)

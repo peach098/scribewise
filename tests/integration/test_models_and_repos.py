@@ -1305,3 +1305,156 @@ async def test_migration_auto_send(migrated_database_url: str) -> None:
             await connection.execution_options(isolation_level="AUTOCOMMIT")
             await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
         await admin.dispose()
+
+
+async def test_migration_stars_payments(migrated_database_url: str) -> None:
+    """specs/015: existing subscriptions become ``operator`` rows, the checks, unique keys and
+    foreign keys of the three payment tables hold, the new event kinds are insertable, and the
+    downgrade drops the tables, columns and enums."""
+    name = f"scribe_migration_{uuid.uuid4().hex[:12]}"
+    admin = create_engine(migrated_database_url)
+    scratch_url = (
+        make_url(migrated_database_url).set(database=name).render_as_string(hide_password=False)
+    )
+    async with admin.connect() as connection:
+        await connection.execution_options(isolation_level="AUTOCOMMIT")
+        await connection.execute(text(f'CREATE DATABASE "{name}"'))
+    scratch = create_engine(scratch_url)
+    ids = {
+        key: uuid.uuid4()
+        for key in ("sub_old", "offer", "offer2", "offer3", "stars", "stars2", "pay", "pay2")
+    }
+
+    async def exists(query: str) -> bool:
+        async with scratch.connect() as connection:
+            return bool((await connection.execute(text(query))).scalar())
+
+    async def rejected(statement: str, **params: object) -> None:
+        with pytest.raises(IntegrityError):
+            async with scratch.begin() as connection:
+                await connection.execute(text(statement), {**ids, **params})
+
+    async def accepted(statement: str, **params: object) -> None:
+        async with scratch.begin() as connection:
+            await connection.execute(text(statement), {**ids, **params})
+
+    def offer_sql(key: str, price: int = 150) -> str:
+        return (
+            "INSERT INTO payment_offers (id, telegram_id, price_stars, created_at)"
+            f" VALUES (:{key}, 900001501, {price}, now())"
+        )
+
+    def stars_sql(key: str, offer: str, charge: str, state: str) -> str:
+        return (
+            "INSERT INTO stars_subscriptions (id, telegram_id, offer_id, first_charge_id,"
+            " price_stars, started_at, period_end, state) VALUES"
+            f" (:{key}, 900001501, :{offer}, '{charge}', 150, now(),"
+            f" now() + interval '30 days', '{state}')"
+        )
+
+    def payment_sql(
+        key: str, charge: str, amount: int = 150, end: str = "+ interval '30 days'"
+    ) -> str:
+        return (
+            "INSERT INTO payments (id, telegram_id, charge_id, amount_stars, kind, paid_at,"
+            " period_start, period_end, credited_via) VALUES"
+            f" (:{key}, 900001501, '{charge}', {amount}, 'first', now(), now(), now() {end},"
+            " 'update')"
+        )
+
+    try:
+        _alembic(scratch_url, "upgrade", "0021")
+        await accepted(
+            "INSERT INTO subscriptions (id, telegram_id, starts_at, ends_at, granted_by)"
+            " VALUES (:sub_old, 900001501, now(), now() + interval '30 days', 'operator')"
+        )
+        _alembic(scratch_url, "upgrade", "head")
+
+        async with scratch.connect() as connection:
+            old = (
+                await connection.execute(
+                    text("SELECT source::text, payment_id FROM subscriptions WHERE id = :sub_old"),
+                    ids,
+                )
+            ).one()
+        assert tuple(old) == ("operator", None)
+
+        for price in (0, 10001):
+            await rejected(offer_sql("offer", price))
+        await accepted(offer_sql("offer"))
+        await accepted(offer_sql("offer2"))
+        await accepted(offer_sql("offer3"))
+
+        await rejected(payment_sql("pay", "c-1", amount=0))
+        await rejected(payment_sql("pay", "c-1", end="- interval '1 day'"))
+        await accepted(payment_sql("pay", "c-1"))
+        await rejected(payment_sql("pay2", "c-1"))  # charge_id is unique
+
+        await accepted(stars_sql("stars", "offer", "c-1", "active"))
+        await rejected(stars_sql("stars2", "offer2", "c-2", "canceled"))  # one running
+        await accepted(stars_sql("stars2", "offer2", "c-2", "ended"))
+        await rejected(stars_sql("stars2", "offer", "c-3", "ended"))  # one subscription per offer
+
+        await accepted("UPDATE payments SET stars_subscription_id = :stars WHERE id = :pay")
+        await accepted(
+            "UPDATE subscriptions SET source = 'stars', payment_id = :pay WHERE id = :sub_old"
+        )
+        for kind in (
+            "payment_received",
+            "payment_renewed",
+            "payment_refunded",
+            "stars_canceled",
+            "stars_resumed",
+            "stars_failed",
+            "stars_ended",
+        ):
+            await accepted(
+                "INSERT INTO access_events (id, telegram_id, kind, actor, meta_json, at)"
+                f" VALUES (gen_random_uuid(), 900001501, '{kind}', 'system', '{{}}', now())"
+            )
+
+        # Deleting the parent rows only unlinks the children.
+        async with scratch.begin() as connection:
+            await connection.execute(text("DELETE FROM stars_subscriptions WHERE id = :stars"), ids)
+        async with scratch.connect() as connection:
+            link = (
+                await connection.execute(
+                    text("SELECT stars_subscription_id FROM payments WHERE id = :pay"), ids
+                )
+            ).scalar()
+        assert link is None
+        async with scratch.begin() as connection:
+            await connection.execute(text("DELETE FROM payments WHERE id = :pay"), ids)
+        async with scratch.connect() as connection:
+            link = (
+                await connection.execute(
+                    text("SELECT payment_id FROM subscriptions WHERE id = :sub_old"), ids
+                )
+            ).scalar()
+        assert link is None
+
+        _alembic(scratch_url, "downgrade", "0021")
+        assert not await exists(
+            "SELECT 1 FROM information_schema.tables WHERE table_name IN"
+            " ('payments', 'stars_subscriptions', 'payment_offers')"
+        )
+        assert not await exists(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'subscriptions'"
+            " AND column_name IN ('source', 'payment_id')"
+        )
+        assert not await exists(
+            "SELECT 1 FROM pg_type WHERE typname IN ('stars_sub_state', 'stars_cancel_source',"
+            " 'stars_end_reason', 'payment_kind', 'payment_source', 'subscription_source')"
+        )
+        assert not await exists(
+            "SELECT 1 FROM access_events"
+            " WHERE kind::text LIKE 'payment_%' OR kind::text LIKE 'stars_%'"
+        )
+        _alembic(scratch_url, "upgrade", "head")
+        assert await exists("SELECT 1 FROM information_schema.tables WHERE table_name = 'payments'")
+    finally:
+        await scratch.dispose()
+        async with admin.connect() as connection:
+            await connection.execution_options(isolation_level="AUTOCOMMIT")
+            await connection.execute(text(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)'))
+        await admin.dispose()

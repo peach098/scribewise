@@ -142,6 +142,7 @@ from scribe.i18n import (
 )
 from scribe.intake.waiting import replan_waiting_turns
 from scribe.logging import get_logger
+from scribe.payments.bot import account_handler
 from scribe.sending.auto_send import (
     AUTO_SEND_WINDOWS,
     OFFER_WINDOW,
@@ -2204,6 +2205,7 @@ def create_router() -> Router:
         exclusions.ChatsStates,  # specs/008: and the exclusion picker
     )
     router.message.register(settings_command, Command("settings"), idle)
+    router.message.register(account_handler, Command("account"), idle)  # specs/015
     router.message.register(chats_command, Command("chats"), idle)
     router.message.register(waiting_command, Command("waiting"), idle)
     router.message.register(pause_command, Command("pause"), idle)

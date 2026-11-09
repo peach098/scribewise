@@ -17,6 +17,14 @@
   ``<who>`` must be a Telegram id or a username already linked to one.
 - ``access show <who>``: the person's access, account and the last 5 access events;
   ``access stats [--days N]``: beta, subscription, application, refusal and suspension counts.
+- ``pay list|stats|show|refund|cancel|sync`` (specs/015-telegram-stars-payments,
+  contracts/operator-cli.md): payments made with Telegram Stars, totals, one person's Stars
+  subscription, a refund (renewal cancelled, Stars returned through Telegram, access period
+  cancelled, the person told), stopping a renewal without a refund, and one run of the
+  ``stars_reconcile`` backfill. ``refund``, ``cancel`` and ``sync`` need a bot, built from
+  ``SCRIBE_BOT_TOKEN``. Output holds ids, amounts, dates and charge ids only. ``sub list`` and
+  ``access show`` also print each period's source (``operator`` or ``stars``) once any Stars
+  period exists; ``sub extend`` and ``sub end`` act on operator rows only.
 - ``release-notes preview <version>``, ``release-notes check``,
   ``release-notes send <version> [--dry-run]``, ``release-notes status [--all]``: release notes
   for users after an update (specs/011-release-notes, contracts/operator-cli.md). ``send`` only
@@ -62,14 +70,27 @@ from scribe.db.models import (
     BetaEntry,
     LLMSpend,
     LLMTier,
+    Payment,
     RefusedContact,
+    StarsCancelSource,
+    StarsSubscription,
+    StarsSubState,
     Subscription,
+    SubscriptionSource,
     User,
     UserState,
 )
 from scribe.db.repos import llm_spend as llm_spend_repo
 from scribe.db.repos import users as users_repo
 from scribe.drafting.budget import BudgetCaps
+from scribe.i18n import DEFAULT_LANG, normalize_lang
+from scribe.logging import configure_logging, get_logger
+from scribe.payments import credit as payments_credit
+from scribe.payments import lifecycle as payments_lifecycle
+from scribe.payments import repo as payments_repo
+from scribe.payments.bot import refunded_text
+from scribe.payments.reconcile import LOOKBACK_DAYS, reconcile_stars
+from scribe.payments.telegram import StarsApi, StarsApiError
 from scribe.release_notes import announce as release_announce
 from scribe.release_notes import version as release_version
 from scribe.release_notes.notes import (
@@ -80,6 +101,7 @@ from scribe.release_notes.notes import (
     read_notes,
 )
 
+log = get_logger("scribe.admin")
 OPERATOR = "operator"
 APPLIES_SOON = "the running service applies this within about 2 minutes"
 BETA_GOAL = 30  # active beta users the closed beta aims for (SC-006)
@@ -424,9 +446,12 @@ async def _require_id(session: AsyncSession, who: Who) -> int:
     return telegram_id
 
 
-async def _open_subs(session: AsyncSession, telegram_id: int, now: datetime) -> list[Subscription]:
-    """Active and scheduled (not cancelled, not ended) rows, latest end last, locked."""
-    result = await session.scalars(
+async def _open_subs(
+    session: AsyncSession, telegram_id: int, now: datetime, *, operator_only: bool = False
+) -> list[Subscription]:
+    """Active and scheduled (not cancelled, not ended) rows, latest end last, locked.
+    ``operator_only`` leaves out ``stars`` periods (specs/015: ``sub extend`` and ``sub end``)."""
+    query = (
         select(Subscription)
         .where(
             Subscription.telegram_id == telegram_id,
@@ -436,6 +461,9 @@ async def _open_subs(session: AsyncSession, telegram_id: int, now: datetime) -> 
         .order_by(Subscription.ends_at, Subscription.created_at)
         .with_for_update()
     )
+    if operator_only:
+        query = query.where(Subscription.source == SubscriptionSource.operator)
+    result = await session.scalars(query)
     return list(result.all())
 
 
@@ -499,7 +527,7 @@ async def sub_extend(
     now when it has already ended."""
     async with session_factory() as session:
         telegram_id = await _require_id(session, who)
-        open_subs = await _open_subs(session, telegram_id, now)
+        open_subs = await _open_subs(session, telegram_id, now, operator_only=True)
         sub = open_subs[-1] if open_subs else await _latest_ended(session, telegram_id)
         if sub is None:
             raise Refused(f"{who} has no subscription to extend")
@@ -517,7 +545,11 @@ async def sub_extend(
 async def _latest_ended(session: AsyncSession, telegram_id: int) -> Subscription | None:
     return await session.scalar(
         select(Subscription)
-        .where(Subscription.telegram_id == telegram_id, Subscription.cancelled_at.is_(None))
+        .where(
+            Subscription.telegram_id == telegram_id,
+            Subscription.cancelled_at.is_(None),
+            Subscription.source == SubscriptionSource.operator,
+        )
         .order_by(Subscription.ends_at.desc(), Subscription.created_at.desc())
         .limit(1)
         .with_for_update()
@@ -530,7 +562,7 @@ async def sub_end(
     """Cancel every active and scheduled subscription; how many."""
     async with session_factory() as session:
         telegram_id = await _require_id(session, who)
-        open_subs = await _open_subs(session, telegram_id, now)
+        open_subs = await _open_subs(session, telegram_id, now, operator_only=True)
         if not open_subs:
             raise Refused(f"{who} has no active or scheduled subscription")
         for sub in open_subs:
@@ -552,12 +584,14 @@ async def sub_list(
             query = query.where(Subscription.cancelled_at.is_(None), Subscription.ends_at > now)
         subs = list((await session.scalars(query)).all())
     lines = []
+    with_source = any(sub.source is SubscriptionSource.stars for sub in subs)  # specs/015
     for sub in subs:
         state = policy.subscription_state(sub, now)
         line = "  ".join(
             [
                 str(sub.telegram_id),
                 f"{state:<9}",
+                *([f"{sub.source.value:<8}"] if with_source else []),
                 _day(sub.starts_at),
                 _day(sub.ends_at),
                 sub.note or "",
@@ -587,9 +621,27 @@ async def run_sub(
             print(f"ended {who}")
     except Refused as exc:
         print(str(exc), file=sys.stderr)
+        if args.sub_command != "grant" and await _stars_running(session_factory, who):
+            print(STARS_HINT, file=sys.stderr)
         return 1
     print(APPLIES_SOON)
+    if args.sub_command != "grant" and await _stars_running(session_factory, who):
+        print(STARS_HINT)
     return 0
+
+
+STARS_HINT = "stars subscription running: use `pay cancel`/`pay refund`"
+
+
+async def _stars_running(session_factory: async_sessionmaker[AsyncSession], who: Who) -> bool:
+    """Whether the person has a running Stars subscription (``sub extend`` / ``sub end`` act on
+    operator periods only and say where the other one is handled)."""
+    async with session_factory() as session:
+        telegram_id = await _telegram_id(session, who)
+        return (
+            telegram_id is not None
+            and await payments_repo.running_for(session, telegram_id) is not None
+        )
 
 
 def _period(args: argparse.Namespace) -> Period:
@@ -627,8 +679,22 @@ async def access_show(
         return [
             f"kind={status.kind.value} until={until}",
             f"account={_yes_no(user is not None)} suspended={suspended}",
+            *await _source_lines(session, telegram_id, now),
             *(_event_line(event) for event in events.all()),
         ]
+
+
+async def _source_lines(session: AsyncSession, telegram_id: int, now: datetime) -> list[str]:
+    """``subscription <state> <source> <start> <end>`` per period, only for people with a Stars
+    period (specs/015): the output of everyone else is what it always was."""
+    subs = await access_repo.subscriptions_for(session, telegram_id)
+    if not any(sub.source is SubscriptionSource.stars for sub in subs):
+        return []
+    return [
+        f"subscription {policy.subscription_state(sub, now)} {sub.source.value} "
+        f"{_day(sub.starts_at)} {_day(sub.ends_at)}"
+        for sub in subs
+    ]
 
 
 async def _show_unlinked(session: AsyncSession, who: Who) -> list[str]:
@@ -702,12 +768,15 @@ async def access_stats(
         pending = await session.scalar(
             select(func.count()).where(BetaApplication.status == BetaApplicationStatus.pending)
         )
+        stars_used = await session.scalar(select(StarsSubscription.id).limit(1))
+        paying = await payments_repo.paying_subscribers(session)
     approved = decided.get(BetaApplicationStatus.approved, 0)
     rejected = decided.get(BetaApplicationStatus.rejected, 0)
     return [
         f"beta entries: {beta_entries or 0}",
         f"beta active users: {beta_active or 0}",
         f"subscriptions active: {subs_active or 0}",
+        *([f"paying subscribers: {paying}"] if stars_used is not None else []),  # specs/015
         f"refused people (last {days} days): {refused or 0}",
         f"applications pending: {pending or 0}",
         f"applications approved / rejected (last {days} days): {approved} / {rejected}",
@@ -735,6 +804,225 @@ async def run_access(
         print(str(exc), file=sys.stderr)
         return 1
     print("\n".join(lines))
+    return 0
+
+
+# --- pay: Telegram Stars payments (specs/015 contracts/operator-cli.md) ---------------------------
+
+PAY_BOT_COMMANDS = frozenset({"refund", "cancel", "sync"})  # these need a bot (and Stars API)
+LIST_DEFAULT_DAYS = 30
+
+
+def _stamp(moment: datetime) -> str:
+    return f"{moment.astimezone(UTC):%Y-%m-%d %H:%M}"
+
+
+def payment_line(payment: Payment) -> str:
+    """``<paid> <id> <amount>⭐ <first/renewal> <start>–<end> <charge_id> [refunded ...]``."""
+    parts = [
+        _stamp(payment.paid_at),
+        str(payment.telegram_id),
+        f"{payment.amount_stars}⭐",
+        payment.kind.value,
+        f"{_day(payment.period_start)}–{_day(payment.period_end)}",
+        payment.charge_id,
+    ]
+    if payment.refunded_at is not None:
+        parts.append(f"[refunded {_day(payment.refunded_at)} by {payment.refunded_by or '-'}]")
+    if payment.owner_deleted_at is not None:
+        parts.append("[deleted owner]")
+    return " ".join(parts)
+
+
+def _range(args: argparse.Namespace, now: datetime) -> tuple[datetime, datetime]:
+    """``--from`` (a day, start of day UTC) to ``--to`` (inclusive): the last 30 days by default."""
+    start = (
+        datetime.combine(args.date_from, time.min, tzinfo=UTC)
+        if args.date_from is not None
+        else now - timedelta(days=LIST_DEFAULT_DAYS)
+    )
+    end = (
+        datetime.combine(args.date_to + timedelta(days=1), time.min, tzinfo=UTC)
+        if args.date_to is not None
+        else now + timedelta(days=1)
+    )
+    return start, end
+
+
+async def pay_list(
+    session_factory: async_sessionmaker[AsyncSession],
+    start: datetime,
+    end: datetime,
+    who: Who | None,
+) -> list[str]:
+    async with session_factory() as session:
+        telegram_id = await _require_id(session, who) if who is not None else None
+        payments = await payments_repo.payments_in_range(
+            session, start, end, telegram_id=telegram_id
+        )
+    return [payment_line(payment) for payment in payments]
+
+
+async def pay_stats(
+    session_factory: async_sessionmaker[AsyncSession], start: datetime, end: datetime
+) -> list[str]:
+    async with session_factory() as session:
+        stats = await payments_repo.stats(session, start, end)
+    return [
+        f"payments {stats.payments} (first {stats.first}, renewal {stats.renewal}), "
+        f"received {stats.received}⭐, refunded {stats.refunded_count} payments / "
+        f"{stats.refunded}⭐, net {stats.net}⭐",
+        f"stars subscriptions: active {stats.active}, cancelled but running "
+        f"{stats.canceled_running}, ended {stats.ended_in_range} (in range)",
+    ]
+
+
+def _stars_line(stars: StarsSubscription) -> str:
+    parts = [
+        f"state={stars.state.value}",
+        f"price={stars.price_stars}⭐",
+        f"period_end={_day(stars.period_end)}",
+    ]
+    if stars.canceled_by is not None:
+        parts.append(f"canceled_by={stars.canceled_by.value}")
+    if stars.ended_reason is not None:
+        parts.append(f"ended_reason={stars.ended_reason.value}")
+    return "stars subscription " + " ".join(parts)
+
+
+async def pay_show(session_factory: async_sessionmaker[AsyncSession], who: Who) -> list[str]:
+    async with session_factory() as session:
+        telegram_id = await _require_id(session, who)
+        subscriptions = await payments_repo.stars_subscriptions_for(session, telegram_id)
+        payments = await payments_repo.payments_for(session, telegram_id)
+    if not subscriptions and not payments:
+        raise Refused(f"{who} has no Stars subscription or payments")
+    return [*(_stars_line(stars) for stars in subscriptions), *(payment_line(p) for p in payments)]
+
+
+async def pay_cancel(
+    session_factory: async_sessionmaker[AsyncSession],
+    api: StarsApi,
+    who: Who,
+    note: str | None,
+    now: datetime,
+) -> str:
+    """Stop renewal without a refund (``canceled_by=operator``); Telegram first."""
+    async with session_factory() as session:
+        telegram_id = await _require_id(session, who)
+        try:
+            result = await payments_lifecycle.cancel_renewal(
+                session,
+                api,
+                telegram_id=telegram_id,
+                by=StarsCancelSource.operator,
+                now=now,
+                note=note,
+            )
+        except StarsApiError as exc:
+            await session.rollback()
+            raise Refused(f"Telegram refused: {exc}; nothing changed") from None
+        if isinstance(result, payments_lifecycle.NothingRunning):
+            raise Refused(f"{who} has no renewing Stars subscription")
+        await session.commit()
+        return f"cancelled renewal for {telegram_id}, active until {_day(result.stars.period_end)}"
+
+
+async def pay_refund(
+    session_factory: async_sessionmaker[AsyncSession],
+    api: StarsApi,
+    bot: Bot | None,
+    charge_id: str,
+    note: str | None,
+    now: datetime,
+) -> str:
+    """Research P8: stop the renewal (a failure only warns), refund through Telegram (a failure
+    changes nothing), then the database part, then tell the person."""
+    async with session_factory() as session:
+        payment = await payments_repo.by_charge(session, charge_id)
+        if payment is None:
+            raise Refused(f"no payment {charge_id}")
+        if payment.refunded_at is not None:
+            raise Refused(f"payment {charge_id} is already refunded")
+        telegram_id, amount = payment.telegram_id, payment.amount_stars
+        stars = (
+            await session.get(StarsSubscription, payment.stars_subscription_id)
+            if payment.stars_subscription_id is not None
+            else None
+        )
+        if stars is not None and stars.state in (StarsSubState.active, StarsSubState.canceled):
+            try:
+                await api.set_renewal(
+                    telegram_id=telegram_id, first_charge_id=stars.first_charge_id, canceled=True
+                )
+            except StarsApiError as exc:
+                print(f"warning: could not stop the renewal on Telegram: {exc}", file=sys.stderr)
+        try:
+            await api.refund(telegram_id=telegram_id, charge_id=charge_id)
+        except StarsApiError as exc:
+            log.warning("stars_refund", result="error")
+            raise Refused(f"Telegram refused the refund: {exc}; nothing changed") from None
+        result = await payments_credit.apply_refund(
+            session, charge_id=charge_id, by=f"operator:{note or 'cli'}", now=now
+        )
+        if not isinstance(result, payments_credit.Refunded):
+            raise Refused(f"payment {charge_id} is already refunded")
+        user = await users_repo.get_by_control_chat(session, telegram_id)
+        text = refunded_text(
+            result.payment, user, normalize_lang(user.language) if user else DEFAULT_LANG
+        )
+        await session.commit()
+    if bot is not None:
+        try:
+            await bot.send_message(telegram_id, text)
+        except Exception as exc:  # a blocked bot: the refund stands
+            print(f"warning: could not tell {telegram_id}: {type(exc).__name__}", file=sys.stderr)
+    return f"refunded {charge_id} {amount}⭐ to {telegram_id}"
+
+
+async def run_pay(
+    args: argparse.Namespace,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings | None,
+    now: datetime,
+    bot: Bot | None,
+    api: StarsApi | None,
+) -> int:
+    command = args.pay_command
+    try:
+        if command == "list":
+            start, end = _range(args, now)
+            lines = await pay_list(session_factory, start, end, args.who)
+            print("\n".join(lines) if lines else "no payments")
+        elif command == "stats":
+            start, end = _range(args, now)
+            print("\n".join(await pay_stats(session_factory, start, end)))
+        elif command == "show":
+            print("\n".join(await pay_show(session_factory, args.who)))
+        else:
+            if api is None:
+                raise Refused("no Telegram connection: set SCRIBE_BOT_TOKEN")
+            if command == "refund":
+                print(await pay_refund(session_factory, api, bot, args.charge_id, args.note, now))
+            elif command == "cancel":
+                print(await pay_cancel(session_factory, api, args.who, args.note, now))
+            else:
+                if settings is None:
+                    from scribe.config import get_settings
+
+                    settings = get_settings()
+                assert bot is not None
+                result = await reconcile_stars(
+                    session_factory, settings, api, bot, clock=lambda: now, days=args.days,
+                    force=True,
+                )  # fmt: skip
+                print(
+                    f"checked {result.checked} transactions, credited {result.credited}, "
+                    f"refunds applied {result.refunds}"
+                )
+    except Refused as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     return 0
 
 
@@ -999,6 +1287,30 @@ def _parser() -> argparse.ArgumentParser:
     stats = access_commands.add_parser("stats", help="beta, subscription and refusal counts")
     stats.add_argument("--days", type=parse_days, default=7, help="refusal window (default 7)")
 
+    pay = commands.add_parser("pay", help="payments made with Telegram Stars")
+    pay_commands = pay.add_subparsers(dest="pay_command", required=True)
+    for name, help_text in (
+        ("list", "payments in a date range, newest first"),
+        ("stats", "totals for a date range"),
+    ):
+        command = pay_commands.add_parser(name, help=help_text)
+        command.add_argument("--from", dest="date_from", type=parse_day, help="first day")
+        command.add_argument("--to", dest="date_to", type=parse_day, help="last day (inclusive)")
+        if name == "list":
+            command.add_argument("--who", type=parse_who, help=who_help)
+    pay_show_parser = pay_commands.add_parser("show", help="one person's Stars subscription")
+    pay_show_parser.add_argument("who", type=parse_who, help=who_help)
+    pay_refund_parser = pay_commands.add_parser("refund", help="refund one payment")
+    pay_refund_parser.add_argument("charge_id", help="the payment's Telegram charge id")
+    pay_refund_parser.add_argument("--note", type=parse_note, help=note_help)
+    pay_cancel_parser = pay_commands.add_parser("cancel", help="stop a renewal, no refund")
+    pay_cancel_parser.add_argument("who", type=parse_who, help=who_help)
+    pay_cancel_parser.add_argument("--note", type=parse_note, help=note_help)
+    pay_sync = pay_commands.add_parser("sync", help="run the stars_reconcile backfill once")
+    pay_sync.add_argument(
+        "--days", type=parse_days, default=LOOKBACK_DAYS, help="days back (default 7)"
+    )
+
     notes = commands.add_parser("release-notes", help="release notes for users after an update")
     notes_commands = notes.add_subparsers(dest="release_command", required=True)
     version_help = "the version, X.Y.Z"
@@ -1025,10 +1337,11 @@ async def run(
     clock: Clock = utcnow,
     settings: Settings | None = None,
     bot: Bot | None = None,
+    stars_api: StarsApi | None = None,
 ) -> int:
     """Run one command; ``settings`` (for the operator ids) defaults to the environment's.
-    ``bot`` sends the notices of ``beta approve`` / ``beta reject``; without one they are
-    skipped."""
+    ``bot`` sends the notices of ``beta approve`` / ``beta reject`` and of ``pay refund``;
+    without one they are skipped. ``stars_api`` reaches Telegram for ``pay refund|cancel|sync``."""
     args = _parser().parse_args(list(argv))
     if args.command == "beta":
         return await run_beta(args, session_factory, clock(), bot)
@@ -1036,6 +1349,8 @@ async def run(
         return await run_sub(args, session_factory, clock())
     if args.command == "access":
         return await run_access(args, session_factory, settings, clock())
+    if args.command == "pay":
+        return await run_pay(args, session_factory, settings, clock(), bot, stars_api)
     if args.command == "release-notes":
         return await run_release_notes(args, session_factory, settings, clock())
     if args.command == "cost":
@@ -1060,16 +1375,26 @@ async def _main(argv: Sequence[str]) -> int:
     from scribe.db.session import create_engine_from_settings, create_session_factory
 
     settings = get_settings()
+    # Redacted log lines go to stderr, so a command's output on stdout is only its result.
+    configure_logging(settings.log_level, sys.stderr, libraries_debug=settings.log_libraries_debug)
     configure_keyring(keyring_from_settings(settings))
     engine = create_engine_from_settings(settings)
     args = _parser().parse_args(list(argv))
     bot = None
-    if args.command == "beta" and args.beta_command in NOTIFYING_COMMANDS:
+    stars_api = None
+    needs_bot = (args.command == "beta" and args.beta_command in NOTIFYING_COMMANDS) or (
+        args.command == "pay" and args.pay_command in PAY_BOT_COMMANDS
+    )
+    if needs_bot:
+        from scribe.payments.telegram import AiogramStarsApi
         from scribe.telegram.control_bot.bot import create_bot
 
         bot = create_bot(settings)
+        stars_api = AiogramStarsApi(bot)
     try:
-        return await run(argv, create_session_factory(engine), settings=settings, bot=bot)
+        return await run(
+            argv, create_session_factory(engine), settings=settings, bot=bot, stars_api=stars_api
+        )
     finally:
         if bot is not None:
             await bot.session.close()

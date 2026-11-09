@@ -61,6 +61,8 @@ from scribe.llm.routes import RouteTableError, load_route_table, validate_route_
 from scribe.logging import configure_logging, get_logger
 from scribe.observability.health import HealthServer, HealthStatus
 from scribe.observability.spend_alert import register_spend_alert_job
+from scribe.payments.reconcile import register_stars_reconcile
+from scribe.payments.telegram import AiogramStarsApi
 from scribe.release_notes.sender import recover_interrupted, register_release_notes_job
 from scribe.retention.pending_credentials import register_pending_credentials_job
 from scribe.retention.purge import register_purge_job
@@ -157,6 +159,7 @@ class Service:
         )
 
         self.bot = self._bot_factory(settings)
+        self.stars_api = AiogramStarsApi(self.bot)  # specs/015
         self.pool = ClientPool(
             self.session_factory,
             api_id=settings.tg_api_id,
@@ -211,6 +214,7 @@ class Service:
             telegram_login=self.telegram_login,
             unread_marker=self.unread_marker,
             auto_send_advisor=self.auto_send_advisor,
+            stars_api=self.stars_api,  # specs/015: the only door to Telegram's payment methods
         )
         await self.pool.start_all()
         self._tasks.append(asyncio.create_task(self._run_bot(), name="control-bot"))
@@ -285,6 +289,10 @@ class Service:
         register_access_reconcile(
             self.scheduler, self.session_factory, self.pool, self.bot, settings, self._clock
         )
+        # specs/015: credit Stars payments that polling lost (every 10 minutes and at start).
+        register_stars_reconcile(
+            self.scheduler, self.session_factory, settings, self.stars_api, self.bot, self._clock
+        )
         # specs/011: after a new version, each user with access gets one "what's new" message.
         release_notes = register_release_notes_job(
             self.scheduler, self.session_factory, self.bot, settings, self._clock
@@ -335,6 +343,7 @@ class Service:
             host=settings.health_host,
             port=settings.health_port,
             access_gate=settings.access_gate,
+            payments_enabled=settings.payments_enabled,
         )
         await self.health.start()
         log.info("scribe_started", users_running=len(self.pool.running_user_ids))
@@ -395,7 +404,11 @@ class Service:
                 delay = 5.0
                 log.info("control_bot_polling", bot_username=me.username)
                 await self.dispatcher.start_polling(
-                    self.bot, handle_signals=False, close_bot_session=False
+                    self.bot,
+                    handle_signals=False,
+                    close_bot_session=False,
+                    # specs/015 research P5: ask for pre_checkout_query and subscription updates
+                    allowed_updates=self.dispatcher.resolve_used_update_types(),
                 )
             except asyncio.CancelledError:
                 raise
