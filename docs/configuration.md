@@ -167,6 +167,9 @@ Details: [earlier-search.md](earlier-search.md).
 | `SCRIBE_OPEN_BOT` | false | With the gate off, `python -m scribe` refuses to start (exit code 2) unless this is true: the bot then serves anyone who finds it, with your LLM key. `python -m scribe.admin` and `alembic` run either way |
 | `SCRIBE_SUBSCRIPTION_CONTACT` | empty | Where to arrange a subscription, shown with the **Subscription** button |
 | `SCRIBE_ACCESS_REFUSAL_COOLDOWN_S` | 3600 | How often one refused person is answered |
+| `SCRIBE_PAYMENTS_ENABLED` | false | Sell subscriptions for Telegram Stars in the bot. Off: nothing changes and the **Subscription** button keeps its placeholder. Needs the access gate and a price |
+| `SCRIBE_STARS_PRICE` | empty | Stars per 30 days, a whole number from 1 to 10000. A change applies after a restart; running subscriptions keep their price |
+| `SCRIBE_TELEGRAM_TEST_ENV` | false | Use Telegram's test server (free test Stars) for checking payments by hand |
 
 Details: [access-gate.md](access-gate.md).
 

@@ -19,6 +19,13 @@
   deletion fails after the log-out, the Telegram session is marked ``revoked`` and the user is
   told the log-out already happened and to try again.
 
+Payments (specs/015): ``/my_data`` lists the person's Stars subscription state and payments;
+``/delete_my_data`` warns about a running Stars subscription (``pay.delete_warning_running``) and
+about the minimal payment record that is kept for 3 years (``pay.delete_warning_record``), and
+on confirmation first cancels the renewal on Telegram (:func:`cancel_stars_before_delete`). If
+Telegram refuses, nothing is deleted (``pay.delete_cancel_failed``) and the person can retry, so
+nobody is charged after deleting.
+
 The summary also shows the grammatical gender for drafts (issue #46; the export has it in the
 user row). Neither the summary nor the export is logged.
 """
@@ -43,11 +50,15 @@ from scribe.access import repo as access_repo
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
 from scribe.context.tasks.service import default_task_sources
-from scribe.db.models import ActivityKind, SessionStatus, User
+from scribe.db.models import ActivityKind, SessionStatus, StarsCancelSource, StarsSubState, User
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import users as users_repo
 from scribe.i18n import Lang, format_day_month_year, t
 from scribe.logging import get_logger
+from scribe.payments import lifecycle
+from scribe.payments import repo as payments_repo
+from scribe.payments.offers import price_text
+from scribe.payments.telegram import StarsApi, StarsApiError
 from scribe.retention.user_data import (
     AccessSummary,
     DataSummary,
@@ -121,7 +132,48 @@ def access_lines(access: AccessSummary, tz: str, lang: str) -> list[str]:
                 status=status,
             )
         )
+    lines += payment_lines(access, tz, lang)  # specs/015: empty without Stars payments
     lines.append(t("access.mydata_events", lang, n=access.events))
+    return lines
+
+
+def payment_lines(access: AccessSummary, tz: str, lang: str) -> list[str]:
+    """The Stars subscription state and the payments of ``/my_data`` (specs/015 FR-019)."""
+    lines: list[str] = []
+    stars = access.stars
+    if stars is not None:
+        if stars.state == "active":
+            state = t(
+                "pay.mydata_stars_active",
+                lang,
+                date=_day(stars.period_end, tz, lang),
+                price=price_text(stars.price),
+            )
+        elif stars.state == "canceled":
+            state = t("pay.mydata_stars_canceled", lang, date=_day(stars.period_end, tz, lang))
+        else:
+            state = t(
+                "pay.mydata_stars_ended",
+                lang,
+                date=_day(stars.ended_at or stars.period_end, tz, lang),
+            )
+        lines.append(t("pay.mydata_stars", lang, state=state))
+    for payment in access.payments:
+        refunded = (
+            t("pay.mydata_refunded", lang, date=_day(payment.refunded_at, tz, lang))
+            if payment.refunded_at is not None
+            else ""
+        )
+        lines.append(
+            t(
+                "pay.mydata_payment",
+                lang,
+                date=_day(payment.paid_at, tz, lang),
+                price=price_text(payment.amount),
+                kind=t(f"pay.mydata_kind_{payment.kind}", lang),
+                refunded=refunded,
+            )
+        )
     return lines
 
 
@@ -257,16 +309,61 @@ async def access_warning(
         telegram_id = user.telegram_control_chat_id
         beta = await access_repo.find_beta(session, telegram_id, None, now=now)
         subs = await access_repo.subscriptions_for(session, telegram_id)
+        running = await payments_repo.running_for(session, telegram_id)
+        paid = [
+            p for p in await payments_repo.payments_for(session, telegram_id)
+            if p.owner_deleted_at is None
+        ]  # fmt: skip
     ends = [s.ends_at for s in subs if s.cancelled_at is None and s.ends_at > now]
-    if beta is None and not ends:
-        return None
-    if not ends:
-        what = t("access.delete_what_beta", lang)
-    else:
-        day = _day(max(ends), user.timezone, lang)
-        key = "access.delete_what_both" if beta is not None else "access.delete_what_subscription"
-        what = t(key, lang, date=day)
-    return t("access.delete_warning", lang, what=what)
+    parts: list[str] = []
+    if beta is not None or ends:
+        if not ends:
+            what = t("access.delete_what_beta", lang)
+        else:
+            day = _day(max(ends), user.timezone, lang)
+            key = (
+                "access.delete_what_both" if beta is not None else "access.delete_what_subscription"
+            )
+            what = t(key, lang, date=day)
+        parts.append(t("access.delete_warning", lang, what=what))
+    if running is not None:  # specs/015: the renewal is cancelled, paid days are lost
+        parts.append(t("pay.delete_warning_running", lang))
+    if paid:  # specs/015: the minimal payment record outlives the deletion
+        parts.append(t("pay.delete_warning_record", lang))
+    return "\n\n".join(parts) if parts else None
+
+
+async def cancel_stars_before_delete(
+    session_factory: async_sessionmaker[AsyncSession],
+    stars_api: StarsApi | None,
+    telegram_id: int,
+    now: datetime,
+) -> bool:
+    """Cancel an ``active`` Stars subscription on Telegram before anything is deleted (specs/015
+    research P10). False when Telegram refuses (or no connection exists): nothing was changed
+    and the deletion must stop."""
+    async with session_factory() as session:
+        running = await payments_repo.running_for(session, telegram_id)
+        if running is None or running.state is not StarsSubState.active:
+            return True  # nothing is going to be charged
+        try:
+            if stars_api is None:
+                raise StarsApiError("payments are not wired")
+            await lifecycle.cancel_renewal(
+                session, stars_api, telegram_id=telegram_id, by=StarsCancelSource.deletion, now=now
+            )
+        except StarsApiError as exc:
+            await session.rollback()
+            log.error(
+                "stars_subscription_state",
+                result="error",
+                action="cancel",
+                by="deletion",
+                error=str(exc),
+            )
+            return False
+        await session.commit()
+        return True
 
 
 async def delete_command(
@@ -297,6 +394,7 @@ async def delete_confirm_input(
     gateway: MessagingGateway,
     lang: Lang,
     clock: Clock = utcnow,
+    stars_api: StarsApi | None = None,
 ) -> None:
     data = await state.get_data()
     if user is None:
@@ -312,6 +410,11 @@ async def delete_confirm_input(
         await message.answer(t("delete.cancelled", lang))
         return
     chat_id = user.telegram_control_chat_id
+    # Specs/015: stop the Stars renewal first; if Telegram refuses, nothing is deleted.
+    if not await cancel_stars_before_delete(session_factory, stars_api, chat_id, clock()):
+        await state.clear()
+        await bot.send_message(chat_id, t("pay.delete_cancel_failed", lang))
+        return
     try:
         await log_out_telegram(gateway, user)
     except Exception as exc:
@@ -326,7 +429,7 @@ async def delete_confirm_input(
     await state.clear()
     try:
         async with session_factory() as session:
-            await delete_user_data(session, user.id)
+            await delete_user_data(session, user.id, now=clock())
             await session.commit()
     except Exception as exc:
         # The session is logged out already: record that, so nothing tries to use it, and say

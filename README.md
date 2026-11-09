@@ -283,7 +283,7 @@ automatically.
 - [Privacy and data](docs/privacy.md): what is stored, for how long, and what goes to the model
 - [Architecture](docs/architecture.md): how a message becomes a draft, the code map
 - [Search over earlier conversations](docs/earlier-search.md)
-- [Access gate](docs/access-gate.md): beta invitations and subscriptions for a hosted instance
+- [Access gate](docs/access-gate.md): beta invitations and subscriptions for a hosted instance, including paying with Telegram Stars (off by default; a self-hosted install stays free)
 - [Release notes and releases](docs/release-notes.md)
 - [Publishing the landing page](docs/deploy-s3.md) (in Russian)
 

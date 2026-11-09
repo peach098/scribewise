@@ -30,6 +30,8 @@ the operator, and the data stays in your database.
 | Chat titles, contact names, your out-of-office note, Jira site and account | encrypted | when you delete your data. A chat you never picked or configured, and a contact nothing refers to any more, also 90 days after Scribe last saw a message there |
 | Activity log for `/history` (no message content) | plain text | when you delete your data |
 | What you decided on each draft, for the auto-send offer (`draft_decisions`: ids, the kind of decision, a time; no message content) | plain text | 31 days after the decision, or when you delete your data |
+| Payments made with Telegram Stars and your Stars subscription (specs/015: Telegram id, amount, dates, Telegram's charge id and refund status; no message content) | plain text | with your account when you delete your data, except the minimal payment record below |
+| Minimal payment record after `/delete_my_data` (Telegram id, amount, dates, charge id, refund status; nothing else) | plain text | 3 years after the deletion, then purged automatically |
 | Daily LLM usage and cost per user (no message content; for the operator, not in `/my_data`) | plain text | after 90 days (`SCRIBE_LLM_SPEND_RETENTION_DAYS`) or when you delete your data |
 
 Encryption is AES-256-GCM in the application, with a fresh random nonce for every value, under
@@ -38,6 +40,11 @@ another place in the database does not decrypt. A database dump without the key 
 message texts, drafts, tokens, or the names of chats and contacts; it does show ids, times,
 settings and the activity log. If the key may have leaked, replace it: see
 [Rotating the master key](configuration.md#rotating-the-master-key).
+
+The payment record is the one exception to "delete everything": a hosted instance that sells
+subscriptions must be able to refund, answer a payment dispute and account for income. The bot
+warns you before you delete, `/terms` states it, and the record holds no names and no content.
+A `/paysupport` message is forwarded to the operators and not stored.
 
 Not stored at all: your phone number, login codes, your 2FA password and the QR login token.
 The messages in which you typed them are deleted from the bot chat right away.

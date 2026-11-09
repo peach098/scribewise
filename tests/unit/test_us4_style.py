@@ -382,6 +382,7 @@ NO_ENTITY_ACTIONS = {
     "jcert",
     "mydata",
     "apply",  # specs/005 US5: the applicant's own FSM data; no users row to own anything
+    "pay",  # specs/015: acts on the presser's own Stars subscription, found by their Telegram id
     "betaapp",  # specs/005 US5: applications are not user-owned; an operator filter guards it
     "profcontacts",
     "profrebuild",

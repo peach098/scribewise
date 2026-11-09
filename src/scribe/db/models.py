@@ -306,12 +306,57 @@ class AccessEventKind(enum.StrEnum):
     application_submitted = "application_submitted"
     application_approved = "application_approved"
     application_rejected = "application_rejected"
+    # specs/015, migration 0022: paying with Telegram Stars
+    payment_received = "payment_received"
+    payment_renewed = "payment_renewed"
+    payment_refunded = "payment_refunded"
+    stars_canceled = "stars_canceled"
+    stars_resumed = "stars_resumed"
+    stars_failed = "stars_failed"
+    stars_ended = "stars_ended"
 
 
 class BetaApplicationStatus(enum.StrEnum):
     pending = "pending"
     approved = "approved"
     rejected = "rejected"
+
+
+# specs/015-telegram-stars-payments (data-model.md)
+class StarsSubState(enum.StrEnum):
+    active = "active"  # renews at period_end
+    canceled = "canceled"  # paid until period_end, then ends
+    ended = "ended"
+
+
+class StarsCancelSource(enum.StrEnum):
+    user_bot = "user_bot"
+    telegram = "telegram"
+    refund = "refund"
+    deletion = "deletion"
+    operator = "operator"
+
+
+class StarsEndReason(enum.StrEnum):
+    canceled = "canceled"
+    failed = "failed"
+    refunded = "refunded"
+    expired = "expired"
+
+
+class PaymentKind(enum.StrEnum):
+    first = "first"
+    renewal = "renewal"
+
+
+class PaymentSource(enum.StrEnum):
+    update = "update"  # the successful_payment message
+    backfill = "backfill"  # getStarTransactions (research P4)
+
+
+class SubscriptionSource(enum.StrEnum):
+    operator = "operator"
+    stars = "stars"
 
 
 def _pg_enum(enum_cls: type[enum.StrEnum], name: str) -> Enum:
@@ -1035,6 +1080,101 @@ class Subscription(_Timestamps, Base):
     granted_by: Mapped[str] = mapped_column(Text, nullable=False)
     note: Mapped[str | None] = mapped_column(Text)  # <= 200 chars, e.g. a payment reference
     reminded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))  # FR-016
+    # specs/015: ``stars`` rows are periods bought with Stars (``payment_id`` names the charge);
+    # ``sub extend`` and ``sub end`` act on ``operator`` rows only.
+    source: Mapped[SubscriptionSource] = mapped_column(
+        _pg_enum(SubscriptionSource, "subscription_source"),
+        nullable=False,
+        default=SubscriptionSource.operator,
+        server_default="operator",
+    )
+    payment_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payments.id", ondelete="SET NULL"),
+        unique=True,
+    )
+
+
+class PaymentOffer(_Timestamps, Base):
+    """One shown offer and its invoice link (specs/015 research P2). Its id is the payload
+    ``sub1:<id>`` of the invoice, so renewals and ``subscription`` updates find their Stars
+    subscription through it. Holds the price the person saw (FR-003); no personal data."""
+
+    __tablename__ = "payment_offers"
+    __table_args__ = (CheckConstraint("price_stars BETWEEN 1 AND 10000", name="price_range"),)
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    price_stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class StarsSubscription(_Timestamps, Base):
+    """A person's recurring Stars subscription (specs/015 research P4, P5). At most one runs
+    (``active`` or ``canceled``) per person (FR-007)."""
+
+    __tablename__ = "stars_subscriptions"
+    __table_args__ = (
+        Index(
+            "uq_stars_subscriptions_running",
+            "telegram_id",
+            unique=True,
+            postgresql_where=text("state IN ('active','canceled')"),
+        ),
+    )
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    offer_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_offers.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    # Needed by editUserStarSubscription.
+    first_charge_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    price_stars: Mapped[int] = mapped_column(Integer, nullable=False)  # FR-015
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    state: Mapped[StarsSubState] = mapped_column(
+        _pg_enum(StarsSubState, "stars_sub_state"), nullable=False
+    )
+    canceled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    canceled_by: Mapped[StarsCancelSource | None] = mapped_column(
+        _pg_enum(StarsCancelSource, "stars_cancel_source")
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_reason: Mapped[StarsEndReason | None] = mapped_column(
+        _pg_enum(StarsEndReason, "stars_end_reason")
+    )
+
+
+class Payment(_Timestamps, Base):
+    """One charge in Stars, first or renewal (specs/015 FR-004). ``charge_id`` is Telegram's
+    ``telegram_payment_charge_id`` and the exactly-once key. After ``/delete_my_data`` the row
+    stays as a minimal record with ``owner_deleted_at`` (FR-020, Clarifications Q3) and is purged
+    1096 days later; nothing on it is content or a name."""
+
+    __tablename__ = "payments"
+    __table_args__ = (
+        CheckConstraint("amount_stars > 0", name="amount_positive"),
+        CheckConstraint("period_end > period_start", name="period"),
+    )
+
+    telegram_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    charge_id: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    amount_stars: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[PaymentKind] = mapped_column(_pg_enum(PaymentKind, "payment_kind"), nullable=False)
+    paid_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    stars_subscription_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("stars_subscriptions.id", ondelete="SET NULL")
+    )
+    credited_via: Mapped[PaymentSource] = mapped_column(
+        _pg_enum(PaymentSource, "payment_source"), nullable=False
+    )
+    refunded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    refunded_by: Mapped[str | None] = mapped_column(Text)  # "operator:<note>" or "telegram"
+    owner_deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class RefusedContact(Base):

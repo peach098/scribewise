@@ -1,6 +1,6 @@
 [project]
 name = "scribe"
-version = "0.5.0"
+version = "0.6.0"
 description = "AI agent that drafts replies to your work messages in your style and context"
 readme = "README.md"
 license = { file = "LICENSE" }

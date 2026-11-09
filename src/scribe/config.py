@@ -188,6 +188,14 @@ class Settings(BaseSettings):
     subscription_contact: str = ""
     access_refusal_cooldown_s: int = Field(default=3600, gt=0)  # FR-006, research Q5
 
+    # --- paying with Telegram Stars (specs/015-telegram-stars-payments) -----------------------
+    # Off by default: self-hosted installs stay free and every existing behaviour is unchanged
+    # (FR-021). Offers are made only when :func:`payments_available` holds (research P9).
+    payments_enabled: bool = False
+    stars_price: int | None = Field(default=None, ge=1, le=10000)  # research P1: Telegram's cap
+    # Use Telegram's test server (free test Stars) for manual checks (quickstart.md).
+    telegram_test_env: bool = False
+
     # --- release notes (specs/011-release-notes) -----------------------------------------------
     release_notes_dir: Path = Path("release-notes")  # relative to /app in the image
     release_notes_auto: bool = True  # announce a new version at startup (FR-008)
@@ -301,6 +309,12 @@ class Settings(BaseSettings):
         if self.test_fast_clock:
             return 60, 120
         return self.draft_remind_after_s, self.draft_expire_after_s
+
+
+def payments_available(settings: Settings) -> bool:
+    """Whether the bot sells subscriptions: the gate, the payments switch and a price are all
+    set (specs/015 FR-021, research P9). With the gate off everyone already has access."""
+    return settings.access_gate and settings.payments_enabled and settings.stars_price is not None
 
 
 @lru_cache(maxsize=1)

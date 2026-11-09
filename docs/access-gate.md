@@ -20,7 +20,44 @@ Settings (`.env`):
   with the **Subscription** placeholder and in renewal reminders. Empty leaves it out.
 - `SCRIBE_ACCESS_REFUSAL_COOLDOWN_S` (3600): how often one refused person is answered.
 
-`/healthz` reports the mode as `"access_gate": true|false`.
+`/healthz` reports the mode as `"access_gate": true|false` and `"payments_enabled": true|false`.
+
+## Paying with Telegram Stars
+
+With `SCRIBE_PAYMENTS_ENABLED=true`, `SCRIBE_STARS_PRICE` set and the gate on, **Subscription**
+shows an offer: a recurring Telegram Stars subscription for the price, 30 days, renewing until
+the person cancels. Stars need no payment provider. Digital services in bots are sold in Stars
+only, so this is the way a hosted instance charges.
+
+- **How it plugs into access.** Each paid 30 days is an ordinary row of `subscriptions` with
+  `source=stars`, so the gate, the reconcile job and `/my_data` work as before. Renewals are
+  credited silently, and a renewing period stays active for 1 hour past its end so a renewal
+  confirmed a little late never cuts access. `sub extend` and `sub end` act on operator rows
+  only.
+- **Exactly once.** Every charge is credited once, keyed by Telegram's charge id. The
+  `stars_reconcile` job (every 10 minutes and at start) reads `getStarTransactions` for the
+  last 7 days and credits anything the bot missed, for example during a restart.
+- **People.** `/account` shows the access and the subscription, with **Cancel subscription**
+  and **Turn renewal back on**. The same buttons come with the reminder 3 days before a
+  renewal. Changes made inside Telegram (cancelling from Settings, a failed charge) are
+  followed. `/paysupport` forwards a message to the operators as plain text, with the charge
+  ids of the last 90 days; nothing is stored. `/terms` states the rules.
+- **Operator.** `pay list [--from] [--to] [--who]`, `pay stats`, `pay show <who>`,
+  `pay refund <charge id> [--note]` (stops the renewal, refunds through Telegram, ends that
+  payment's access and tells the person), `pay cancel <who>` (stops a renewal, no refund) and
+  `pay sync [--days N]` (one `stars_reconcile` run). Refunds, `pay cancel` and `pay sync` need
+  `SCRIBE_BOT_TOKEN`. `sub list` and `access show` name each period's source once Stars are in
+  use, and `access stats` adds `paying subscribers`.
+- **Data.** `/delete_my_data` first cancels the renewal on Telegram (and stops if Telegram
+  refuses, so nobody is charged after deleting), then deletes everything except a minimal
+  payment record: Telegram id, amount, dates, charge id and refund status. It is kept for
+  3 years after the deletion for refunds, disputes and accounting, then purged; the person is
+  warned before they delete, and `/terms` says so.
+- **Trying it.** Run the bot against Telegram's test server (`SCRIBE_TELEGRAM_TEST_ENV=true`),
+  where Stars are free. The manual checks are in
+  [`specs/015-telegram-stars-payments/quickstart.md`](../specs/015-telegram-stars-payments/quickstart.md).
+
+Self-hosted installs stay free: payments are off by default and nothing changes without them.
 
 Admin commands (`docker compose run --rm app python -m scribe.admin <command>`); `<who>` is a
 numeric Telegram id or `@username`:

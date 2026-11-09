@@ -12,7 +12,17 @@ from typing import Any
 from aiogram import Bot
 from aiogram.client.session.base import BaseSession
 from aiogram.methods import GetMe, GetUpdates, SendMessage, SendPhoto, TelegramMethod
-from aiogram.types import CallbackQuery, Chat, Message, Update, User
+from aiogram.types import (
+    BotSubscriptionUpdated,
+    CallbackQuery,
+    Chat,
+    Message,
+    PreCheckoutQuery,
+    RefundedPayment,
+    SuccessfulPayment,
+    Update,
+    User,
+)
 
 _update_ids = itertools.count(1)
 _message_ids = itertools.count(1)
@@ -168,5 +178,97 @@ def callback_update(
             chat_instance="synthetic",
             data=data,
             message=message if with_message else None,
+        ),
+    )
+
+
+# --- payments (specs/015) ----------------------------------------------------------------------
+
+
+def successful_payment_update(
+    chat_id: int,
+    payload: str,
+    charge_id: str,
+    *,
+    amount: int = 150,
+    expires_at: datetime | None = None,
+    is_first: bool = True,
+    language_code: str | None = None,
+    date: datetime = NOW,
+) -> Update:
+    """A ``successful_payment`` service message of a Stars subscription (first or renewal)."""
+    return Update(
+        update_id=next(_update_ids),
+        message=Message(
+            message_id=next(_message_ids),
+            date=date,
+            chat=Chat(id=chat_id, type="private"),
+            from_user=User(
+                id=chat_id, is_bot=False, first_name="Synthetic", language_code=language_code
+            ),
+            successful_payment=SuccessfulPayment(
+                currency="XTR",
+                total_amount=amount,
+                invoice_payload=payload,
+                telegram_payment_charge_id=charge_id,
+                provider_payment_charge_id="",
+                subscription_expiration_date=int(expires_at.timestamp()) if expires_at else None,
+                is_recurring=True,
+                is_first_recurring=is_first,
+            ),
+        ),
+    )
+
+
+def refunded_payment_update(
+    chat_id: int, payload: str, charge_id: str, *, amount: int = 150
+) -> Update:
+    return Update(
+        update_id=next(_update_ids),
+        message=Message(
+            message_id=next(_message_ids),
+            date=NOW,
+            chat=Chat(id=chat_id, type="private"),
+            from_user=User(id=chat_id, is_bot=False, first_name="Synthetic"),
+            refunded_payment=RefundedPayment(
+                currency="XTR",
+                total_amount=amount,
+                invoice_payload=payload,
+                telegram_payment_charge_id=charge_id,
+            ),
+        ),
+    )
+
+
+def precheckout_update(
+    payer_id: int,
+    payload: str,
+    *,
+    amount: int = 150,
+    currency: str = "XTR",
+    language_code: str | None = None,
+) -> Update:
+    return Update(
+        update_id=next(_update_ids),
+        pre_checkout_query=PreCheckoutQuery(
+            id=str(next(_callback_ids)),
+            from_user=User(
+                id=payer_id, is_bot=False, first_name="Synthetic", language_code=language_code
+            ),
+            currency=currency,
+            total_amount=amount,
+            invoice_payload=payload,
+        ),
+    )
+
+
+def subscription_update(payer_id: int, payload: str, state: str) -> Update:
+    """A ``subscription`` update (BotSubscriptionUpdated): canceled, active or failed."""
+    return Update(
+        update_id=next(_update_ids),
+        subscription=BotSubscriptionUpdated(
+            user=User(id=payer_id, is_bot=False, first_name="Synthetic"),
+            invoice_payload=payload,
+            state=state,
         ),
     )

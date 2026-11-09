@@ -39,6 +39,14 @@
   deliveries (versions of the announcement, state, delivered at), and :func:`data_summary`
   counts the ones received (``sent`` or ``unknown``).
 
+- Payments (specs/015): the export's ``payments`` and ``stars_subscriptions`` keys list the
+  person's Stars payments (charge id, amount, dates, refund) and subscriptions, ids and dates
+  only; the **Access** section of :func:`data_summary` adds the Stars subscription state and the
+  payments. :func:`delete_user_data` deletes the person's ``stars_subscriptions`` and
+  ``payment_offers`` but **keeps their ``payments`` rows** as a minimal record with
+  ``owner_deleted_at`` set (refunds, disputes and accounting; purged 1096 days later by the
+  retention job; Clarifications Q3, FR-020). The caller cancels the renewal on Telegram first.
+
 - Auto-send (specs/014): the user's and chats' new columns are exported with their rows, and the
   ``draft_decisions`` key lists what the user decided on each draft (a code, a flag, a time and
   ids, never text); :func:`data_summary` counts them (``decisions``), and the retention job
@@ -56,12 +64,13 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, func, inspect, select
+from sqlalchemy import delete, exists, func, inspect, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from scribe.access import applications as applications_repo
 from scribe.access import policy
 from scribe.access import repo as access_repo
+from scribe.clock import utcnow
 from scribe.db.models import (
     RELEASE_RECEIVED_STATES,
     AccessEvent,
@@ -75,9 +84,12 @@ from scribe.db.models import (
     Draft,
     DraftDecision,
     Message,
+    Payment,
+    PaymentOffer,
     ProfileState,
     RefusedContact,
     ReleaseDelivery,
+    StarsSubscription,
     StyleProfile,
     StyleRuleProposal,
     Subscription,
@@ -89,6 +101,7 @@ from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import users as users_repo
 from scribe.drafting.stored_output import load_stored_output
 from scribe.logging import get_logger
+from scribe.payments import repo as payments_repo
 from scribe.release_notes import repo as release_notes_repo
 
 log = get_logger("scribe.retention")
@@ -279,6 +292,17 @@ async def export_user_data(
     beta, subs, events = await _access_rows(session, user.telegram_control_chat_id, now)
     apps = await applications_repo.for_person(session, user.telegram_control_chat_id)
     export["access"] = _access_export(beta, subs, events, apps, now)
+    export["payments"] = [  # specs/015: ids, amounts and dates; never text
+        row_dict(payment)
+        for payment in await payments_repo.payments_for(session, user.telegram_control_chat_id)
+        if payment.owner_deleted_at is None
+    ]
+    export["stars_subscriptions"] = [
+        row_dict(stars)
+        for stars in await payments_repo.stars_subscriptions_for(
+            session, user.telegram_control_chat_id
+        )
+    ]
     export["release_notes"] = [
         {
             "versions": covered,
@@ -312,12 +336,32 @@ class ApplicationSummary:
 
 
 @dataclass(frozen=True)
+class StarsSummary:
+    """The person's latest Stars subscription (specs/015)."""
+
+    state: str  # active | canceled | ended
+    price: int
+    period_end: datetime
+    ended_at: datetime | None
+
+
+@dataclass(frozen=True)
+class PaymentSummary:
+    paid_at: datetime
+    amount: int
+    kind: str  # first | renewal
+    refunded_at: datetime | None
+
+
+@dataclass(frozen=True)
 class AccessSummary:
     kind: str  # policy.AccessKind value
     beta_since: datetime | None
     subscriptions: tuple[SubscriptionSummary, ...]
     events: int
     applications: tuple[ApplicationSummary, ...] = ()
+    stars: StarsSummary | None = None  # specs/015
+    payments: tuple[PaymentSummary, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -363,7 +407,16 @@ async def access_summary(
 ) -> AccessSummary:
     beta, subs, events = await _access_rows(session, telegram_id, now)
     apps = await applications_repo.for_person(session, telegram_id)
-    status = policy.status(beta, subs, is_operator=is_operator, now=now)
+    renewing = await payments_repo.renewing_payment_ids(session, telegram_id)
+    status = policy.status(
+        beta, subs, is_operator=is_operator, now=now, renewing_payment_ids=renewing
+    )
+    stars_rows = await payments_repo.stars_subscriptions_for(session, telegram_id)
+    payments = [
+        payment
+        for payment in await payments_repo.payments_for(session, telegram_id)
+        if payment.owner_deleted_at is None
+    ]
     return AccessSummary(
         kind=status.kind.value,
         beta_since=beta.added_at if beta is not None else None,
@@ -374,6 +427,19 @@ async def access_summary(
         events=len(events),
         applications=tuple(
             ApplicationSummary(app.consent_at, app.status.value, app.decided_at) for app in apps
+        ),
+        stars=(
+            StarsSummary(
+                stars_rows[0].state.value,
+                stars_rows[0].price_stars,
+                stars_rows[0].period_end,
+                stars_rows[0].ended_at,
+            )
+            if stars_rows
+            else None
+        ),
+        payments=tuple(
+            PaymentSummary(p.paid_at, p.amount_stars, p.kind.value, p.refunded_at) for p in payments
         ),
     )
 
@@ -467,13 +533,40 @@ async def data_summary(
     )
 
 
-async def delete_user_data(session: AsyncSession, user_id: uuid.UUID) -> None:
+async def delete_user_data(
+    session: AsyncSession, user_id: uuid.UUID, *, now: datetime | None = None
+) -> None:
     """``DELETE FROM users`` (cascade to every per-user table; the FSM row by trigger), and the
-    access rows keyed to the person's Telegram id, in the caller's transaction."""
+    access rows keyed to the person's Telegram id, in the caller's transaction.
+
+    Payments (specs/015 FR-020): first the person's ``payments`` get ``owner_deleted_at`` and
+    stay as a minimal record; their ``stars_subscriptions`` and ``payment_offers`` go with the
+    rest (``payments.stars_subscription_id`` nulls itself). The renewal must have been cancelled
+    on Telegram by the caller."""
     telegram_id = await session.scalar(
         select(User.telegram_control_chat_id).where(User.id == user_id)
     )
     if telegram_id is not None:
+        await session.execute(
+            update(Payment)
+            .where(Payment.telegram_id == telegram_id, Payment.owner_deleted_at.is_(None))
+            .values(owner_deleted_at=now if now is not None else utcnow())
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(
+            delete(StarsSubscription)
+            .where(StarsSubscription.telegram_id == telegram_id)
+            .execution_options(synchronize_session=False)
+        )
+        await session.execute(
+            delete(PaymentOffer)
+            .where(
+                PaymentOffer.telegram_id == telegram_id,
+                # A link forwarded to someone else may carry their subscription: it stays.
+                ~exists().where(StarsSubscription.offer_id == PaymentOffer.id),
+            )
+            .execution_options(synchronize_session=False)
+        )
         counts: dict[str, int] = {}
         for model in ACCESS_TABLES:
             result = await session.execute(
@@ -490,6 +583,8 @@ __all__ = [
     "AccessSummary",
     "ApplicationSummary",
     "DataSummary",
+    "PaymentSummary",
+    "StarsSummary",
     "SubscriptionSummary",
     "TableSummary",
     "access_summary",

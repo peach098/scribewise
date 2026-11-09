@@ -19,6 +19,12 @@ For anyone without access, ``apply:`` buttons and the messages of the applicatio
 media and ``/cancel`` while in ``ApplyStates``; other commands are not) pass to
 ``scribe.access.apply`` without counting against the cooldown (US5).
 
+Payments (specs/015, research P7): for anyone without access, the service messages
+``successful_payment`` and ``refunded_payment``, ``pay:`` buttons, ``/paysupport``, ``/terms``
+and any message in ``PaySupportStates`` (``/cancel`` included) also pass, without counting
+against the cooldown (:func:`payment_allows`): a person with no account must be credited for
+what they paid. ``pre_checkout_query`` and ``subscription`` updates never reach this gate.
+
 Callback queries are always answered (silently) so the client's spinner stops; inline queries
 get an empty result. Logs hold only ``answered`` and ``has_account``, never an id or a username.
 """
@@ -41,6 +47,7 @@ from scribe.db.models import User
 from scribe.db.repos import users as users_repo
 from scribe.i18n import Lang, language_for_code, normalize_lang
 from scribe.logging import get_logger
+from scribe.payments.states import PaySupportStates
 from scribe.telegram.control_bot.account_command import DeleteStates
 
 log = get_logger("scribe.access")
@@ -48,7 +55,9 @@ log = get_logger("scribe.access")
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
 # Restricted mode (no access, account exists): what still reaches its handler (FR-011).
-RESTRICTED_COMMANDS = frozenset({"my_data", "delete_my_data", "cancel"})
+RESTRICTED_COMMANDS = frozenset({"my_data", "delete_my_data", "cancel", "account"})
+PAY_PREFIX = "pay:"  # specs/015: the payment buttons; the gate lets them through
+PAY_COMMANDS = frozenset({"paysupport", "terms"})
 RESTRICTED_CALLBACK_PREFIXES = ("mydata:",)
 RESTRICTED_STATES = frozenset({DeleteStates.confirm.state})  # any message in these FSM states
 
@@ -71,6 +80,21 @@ async def apply_allows(event: TelegramObject, state: FSMContext | None) -> bool:
     if command_name(event.text) not in (None, "cancel"):
         return False
     return await state.get_state() in ApplyStates.__all_states_names__
+
+
+async def payment_allows(event: TelegramObject, state: FSMContext | None) -> bool:
+    """Whether an update belongs to the payments flows (specs/015 research P7): a payment
+    service message, a ``pay:`` button, ``/paysupport`` or ``/terms``, or any message (a
+    ``/cancel`` included) while in ``PaySupportStates``."""
+    if isinstance(event, CallbackQuery):
+        return (event.data or "").startswith(PAY_PREFIX)
+    if not isinstance(event, Message):
+        return False
+    if event.successful_payment is not None or event.refunded_payment is not None:
+        return True
+    if command_name(event.text) in PAY_COMMANDS:
+        return True
+    return state is not None and await state.get_state() in PaySupportStates.__all_states_names__
 
 
 async def restricted_allows(event: TelegramObject, state: FSMContext | None) -> bool:
@@ -130,6 +154,8 @@ class AccessGateMiddleware(BaseMiddleware):
             ):
                 await _drop_unfinished_flow(event, state, data)  # the application replaces it
             return await handler(event, data)
+        if await payment_allows(event, state):
+            return await handler(event, data)
         if user is not None and await restricted_allows(event, state):
             await _drop_unfinished_flow(event, state, data)
             return await handler(event, data)
@@ -145,7 +171,12 @@ class AccessGateMiddleware(BaseMiddleware):
             )
             if answered:
                 text, markup = await no_access_reply(
-                    session, sender.id, has_account=user is not None, lang=lang, now=now
+                    session,
+                    sender.id,
+                    has_account=user is not None,
+                    lang=lang,
+                    now=now,
+                    settings=self._settings,
                 )
             await session.commit()
         log.info("access_refused", answered=answered, has_account=user is not None)
@@ -200,11 +231,13 @@ def _language(user: User | None, language_code: str | None) -> Lang:
 
 
 __all__ = [
+    "PAY_PREFIX",
     "RESTRICTED_CALLBACK_PREFIXES",
     "RESTRICTED_COMMANDS",
     "RESTRICTED_STATES",
     "AccessGateMiddleware",
     "apply_allows",
     "command_name",
+    "payment_allows",
     "restricted_allows",
 ]

@@ -20,7 +20,10 @@ Send these in your bot chat. The same list is in the bot's menu and in `/help`.
 | `/history` | What the agent did recently, without message content |
 | `/my_data` | What is stored about you, with **📦 Export** |
 | `/telegram` | Telegram connection status: disconnect or reconnect |
-| `/delete_my_data` | Delete everything about you and log the Telegram session out |
+| `/delete_my_data` | Delete everything about you and log the Telegram session out. A Stars subscription is cancelled first; a minimal payment record is kept for 3 years |
+| `/account` | Your access and subscription, with **Cancel subscription** or **Turn renewal back on**, or **Subscription** when payments are on and you have none |
+| `/paysupport` | Describe a payment problem; it is forwarded to the operators as plain text and not stored. Works for anyone, with or without access |
+| `/terms` | The subscription terms: price, renewal, cancellation, refunds and the payment record |
 | `/help` | The list of commands |
 | `/cancel` | Leave the current step (editing, setup, a settings prompt, a connection flow) |
 
@@ -87,6 +90,12 @@ nothing to change", 2 is a usage error.
 | `sub end <who> [--note TEXT]` | End active and scheduled subscriptions |
 | `sub list [--all]` | Subscriptions |
 | `access show <who>` | Access status and recent access events of one person |
+| `pay list [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--who <who>]` | Stars payments, newest first (default: the last 30 days) |
+| `pay stats [--from] [--to]` | Payment totals, refunds and Stars subscription counts |
+| `pay show <who>` | One person's Stars subscription and payments |
+| `pay refund <charge id> [--note TEXT]` | Refund a payment: stops the renewal, returns the Stars, ends that payment's access, tells the person |
+| `pay cancel <who> [--note TEXT]` | Stop a renewal without a refund |
+| `pay sync [--days N]` | Run the backfill of missed payments once (default 7 days) |
 | `access stats [--days N]` | Counts of beta users, subscriptions, applications, refusals |
 | `release-notes preview <X.Y.Z>` | Show the "what's new" message for a version, in each language |
 | `release-notes check` | Validate every file in `release-notes/` |
@@ -94,7 +103,8 @@ nothing to change", 2 is a usage error.
 | `release-notes status [--all]` | Announcements and their delivery counts |
 | `cost [--days N]` | LLM spend in USD per user per UTC day, split by route, for the last N days including today (default 7), with calls and tokens; user ids only |
 
-The access gate is described in [access-gate.md](access-gate.md), release notes in
+The access gate and payments with Telegram Stars are described in
+[access-gate.md](access-gate.md), release notes in
 [release-notes.md](release-notes.md).
 
 Maintenance jobs, normally run by the scheduler:

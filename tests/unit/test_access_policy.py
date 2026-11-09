@@ -3,13 +3,21 @@
 from __future__ import annotations
 
 import base64
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from scribe.access.policy import AccessKind, AccessStatus, is_operator, status, subscription_active
+from scribe.access.policy import (
+    STARS_GRACE,
+    AccessKind,
+    AccessStatus,
+    is_operator,
+    status,
+    subscription_active,
+)
 from scribe.config import Settings
-from scribe.db.models import BetaEntry, Subscription
+from scribe.db.models import BetaEntry, Subscription, SubscriptionSource
 
 NOW = datetime(2026, 10, 14, 10, 0, tzinfo=UTC)
 TELEGRAM_ID = 900000001
@@ -123,3 +131,55 @@ def test_is_operator(telegram_id: int, expected: bool) -> None:
         operator_telegram_ids=[OPERATOR_ID],
     )
     assert is_operator(telegram_id, settings) is expected
+
+
+# --- specs/015: grace for a renewing Stars period (research P5) ----------------------------------
+
+
+def _stars_sub(ends_at: datetime) -> Subscription:
+    return Subscription(
+        telegram_id=TELEGRAM_ID,
+        starts_at=ends_at - timedelta(days=30),
+        ends_at=ends_at,
+        granted_by="stars",
+        source=SubscriptionSource.stars,
+        payment_id=uuid.uuid4(),
+    )
+
+
+def test_stars_grace_is_one_hour() -> None:
+    assert timedelta(hours=1) == STARS_GRACE
+
+
+def test_renewing_stars_period_stays_active_for_the_grace_hour() -> None:
+    ends_at = NOW - timedelta(minutes=59)
+    sub = _stars_sub(ends_at)
+    renewing = frozenset({sub.payment_id}) if sub.payment_id else frozenset()
+    assert subscription_active(sub, NOW, renewing) is True
+    assert status(None, [sub], is_operator=False, now=NOW, renewing_payment_ids=renewing) == (
+        AccessStatus(AccessKind.subscribed, ends_at)  # ``until`` is the real end, not +grace
+    )
+    later = ends_at + timedelta(minutes=61)
+    assert subscription_active(sub, later, renewing) is False
+    assert not status(
+        None, [sub], is_operator=False, now=later, renewing_payment_ids=renewing
+    ).has_access
+
+
+def test_stars_period_not_renewing_gets_no_grace() -> None:
+    sub = _stars_sub(NOW - timedelta(minutes=1))
+    assert subscription_active(sub, NOW) is False
+    assert subscription_active(sub, NOW, frozenset({uuid.uuid4()})) is False
+
+
+def test_operator_row_never_gets_grace() -> None:
+    sub = _sub(NOW - timedelta(days=30), NOW - timedelta(minutes=1))
+    sub.payment_id = uuid.uuid4()
+    assert subscription_active(sub, NOW, frozenset({sub.payment_id})) is False
+
+
+def test_cancelled_renewing_period_gets_no_grace() -> None:
+    sub = _stars_sub(NOW + timedelta(days=5))
+    sub.cancelled_at = NOW - timedelta(minutes=5)
+    renewing = frozenset({sub.payment_id}) if sub.payment_id else frozenset()
+    assert subscription_active(sub, NOW, renewing) is False

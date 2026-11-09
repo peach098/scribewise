@@ -124,6 +124,7 @@ COMMAND_NAMES: tuple[str, ...] = (
     "start",
     "chats",
     "settings",
+    "account",  # specs/015
     "profile",
     "commitments",
     "waiting",
@@ -136,6 +137,8 @@ COMMAND_NAMES: tuple[str, ...] = (
     "my_data",
     "telegram",
     "delete_my_data",
+    "paysupport",  # specs/015
+    "terms",
     "help",
 )
 

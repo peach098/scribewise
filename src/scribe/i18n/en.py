@@ -1014,6 +1014,129 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     # --- access gate: subscription reminder (specs/005 US4, access_reconcile) ---
     "access.sub_reminder": "Your Scribe subscription ends on {date}. To renew: {renew}",
     "access.renew_send_start": "send /start",
+    # --- paying with Telegram Stars (specs/015, scribe.payments); {price} is "150 ⭐" ---
+    "cmd.account": "Your access and subscription",
+    "cmd.paysupport": "Help with a payment",
+    "cmd.terms": "Subscription terms",
+    "pay.offer": (
+        "Scribe subscription: {price} every 30 days.\n"
+        "It includes drafts of replies in your work chats, written in your style. You approve "
+        "every reply before it is sent.\n"
+        "It renews automatically until you cancel; cancel any time in /account.\n"
+        "By subscribing you accept the /terms."
+    ),
+    "pay.offer_has_beta": (
+        "You already have beta access; a subscription keeps you in after the beta."
+    ),
+    "pay.offer_has_sub": "You already have access until {date}.",
+    "pay.btn_subscribe": "Subscribe for {price}",
+    "pay.invoice_title": "Scribe subscription",
+    "pay.invoice_description": "Drafts of replies in your work chats, every 30 days",
+    "pay.invoice_label": "Subscription",
+    "pay.declined_off": "Subscriptions are not available right now. Please try again later.",
+    "pay.declined_price": (
+        "The price has changed. Press Subscription again to see the current offer."
+    ),
+    "pay.declined_expired": "This offer has expired. Press Subscription again.",
+    "pay.declined_running": "You already have a Scribe subscription. Manage it in /account.",
+    "pay.declined_error": "Something went wrong and nothing was charged. Please try again.",
+    "pay.thanks": (
+        "Subscription active. Next charge {date}: {price}. Cancel any time in /account."
+    ),
+    "pay.thanks_start": "Send /start to set up.",
+    "btn.pay_cancel": "Cancel subscription",
+    "btn.pay_resume": "Turn renewal back on",
+    "btn.pay_subscription": "💳 Subscription",
+    "btn.pay_cancel_yes": "Yes, cancel",
+    "btn.pay_cancel_no": "Keep",
+    "pay.account": "💳 Your account\n{lines}",
+    "pay.account_renews": "Stars subscription: renews on {date} for {price}",
+    "pay.account_canceled": "Stars subscription: cancelled, active until {date}",
+    "pay.account_operator_sub": "Subscription until {date} (granted by the operator)",
+    "pay.account_help": "Payment help: /paysupport · Terms: /terms",
+    "pay.cancel_confirm": (
+        "Cancel the subscription? It will not renew, and you keep access until {date}."
+    ),
+    "pay.canceled": "Subscription cancelled. It stays active until {date}.",
+    "pay.resumed": "Renewal is back on. Next charge {date}: {price}.",
+    "pay.try_again": "Telegram did not accept that. Nothing was changed; please try again.",
+    "pay.stale": "That button is out of date. Here is your current account.",
+    "pay.renew_reminder": "Your subscription renews on {date} for {price}.",
+    "pay.end_reminder": "Your subscription ends on {date}.",
+    "pay.renew_with_stars": "pay with Stars: press Subscription below",
+    "pay.ended_canceled": (
+        "Your subscription has ended, so I've stopped reading your chats. Replies waiting for "
+        "your approval were not sent. Your data is kept: /my_data, /delete_my_data."
+    ),
+    "pay.ended_failed": (
+        "The renewal charge failed, so your subscription ended. I've stopped reading your "
+        "chats. Your data is kept: /my_data, /delete_my_data."
+    ),
+    "pay.ended_expired": (
+        "Your subscription was not renewed, so it ended. I've stopped reading your chats. "
+        "Your data is kept: /my_data, /delete_my_data."
+    ),
+    "pay.refunded": (
+        "Your payment of {price} from {date} was refunded. The subscription is cancelled."
+    ),
+    "pay.support_intro": (
+        "Payments are in Telegram Stars: {price_line}It renews every 30 days until you "
+        "cancel in /account. Refunds are decided by the operator.\n"
+        "Describe the problem in one message (up to 1000 characters), or send /cancel."
+    ),
+    "pay.support_price_line": "{price} per 30 days. ",
+    "pay.support_operator": (
+        "Payment help request from {who}\nid {telegram_id}\nPayments (last 90 days): "
+        "{payments}\n\n{text}"
+    ),
+    "pay.support_none": "none",
+    "pay.support_sent": "Sent to the operator. They will write to you here.",
+    "pay.support_wait": "You sent a request a moment ago. Please wait a few minutes.",
+    "pay.support_contact": "Payment help: {contact}.",
+    "pay.support_contact_none": "Payment help is not set up on this instance.",
+    "pay.support_again": (
+        "Please describe the problem in one text message (1 to 1000 characters), or send /cancel."
+    ),
+    "pay.support_cancelled": "Cancelled. Nothing was sent.",
+    "pay.terms": (
+        "Scribe subscription terms\n\n"
+        "Scribe prepares draft replies to your work chats in your style; you approve each one "
+        "before it is sent.\n\n"
+        "Price: {price} every 30 days, paid in Telegram Stars. It renews automatically until "
+        "cancelled: cancel any time in /account and access stays until the paid period ends.\n\n"
+        "Refunds: on request through /paysupport, decided by the operator.\n\n"
+        "If you delete your data with /delete_my_data, a minimal payment record (Telegram id, "
+        "amount, date and payment reference) is kept for 3 years for accounting.\n\n"
+        "Payment help: /paysupport."
+    ),
+    "pay.terms_no_price": (
+        "Scribe subscription terms\n\n"
+        "Scribe prepares draft replies to your work chats in your style; you approve each one "
+        "before it is sent.\n\n"
+        "Prices are not set yet. A subscription is paid in Telegram Stars, renews automatically "
+        "until cancelled, and can be cancelled any time in /account.\n\n"
+        "Refunds: on request through /paysupport, decided by the operator.\n\n"
+        "If you delete your data with /delete_my_data, a minimal payment record (Telegram id, "
+        "amount, date and payment reference) is kept for 3 years for accounting.\n\n"
+        "Payment help: /paysupport."
+    ),
+    "pay.delete_warning_running": (
+        "Your Stars subscription will be cancelled. Paid days left are lost and not refunded "
+        "automatically."
+    ),
+    "pay.delete_warning_record": "A minimal record of your payments is kept for 3 years.",
+    "pay.delete_cancel_failed": (
+        "I could not cancel your Stars subscription on Telegram, so nothing was deleted. "
+        "Please try again in a moment."
+    ),
+    "pay.mydata_stars": "Stars subscription: {state}",
+    "pay.mydata_stars_active": "renews on {date} for {price}",
+    "pay.mydata_stars_canceled": "cancelled, active until {date}",
+    "pay.mydata_stars_ended": "ended on {date}",
+    "pay.mydata_payment": "Payment {date}: {price}, {kind}{refunded}",
+    "pay.mydata_kind_first": "first",
+    "pay.mydata_kind_renewal": "renewal",
+    "pay.mydata_refunded": ", refunded {date}",
     # --- access gate: beta applications in the bot (specs/005 US5, scribe.access.apply) ---
     "btn.apply_join": "🙋 Join the beta",
     "btn.apply_subscription": "💳 Subscription",

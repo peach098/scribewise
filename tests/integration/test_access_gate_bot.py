@@ -12,14 +12,15 @@ import itertools
 import uuid
 
 import pytest
-from aiogram import Dispatcher
+from aiogram import Dispatcher, F, Router
 from aiogram.fsm.storage.base import StorageKey
 from aiogram.methods import AnswerCallbackQuery, AnswerInlineQuery, SendDocument, SendMessage
-from aiogram.types import InlineQuery, Update
+from aiogram.types import CallbackQuery, InlineQuery, Message, Update
 from aiogram.types import User as TgUser
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from scribe.access.gate import AccessGateMiddleware
 from scribe.config import Settings
 from scribe.db.models import (
     AccessEvent,
@@ -31,7 +32,8 @@ from scribe.db.models import (
 )
 from scribe.db.repos import users as users_repo
 from scribe.i18n import t
-from scribe.telegram.control_bot.bot import create_dispatcher
+from scribe.payments.states import PaySupportStates
+from scribe.telegram.control_bot.bot import UserContextMiddleware, create_dispatcher
 from scribe.telegram.control_bot.connect_flow import ConnectStates
 from scribe.telegram.control_bot.fsm_storage import PostgresFSMStorage
 from scribe.telegram.fake_gateway import FakeMessagingGateway
@@ -40,6 +42,8 @@ from tests.integration.bot_support import (
     RecordingSession,
     callback_update,
     offline_bot,
+    refunded_payment_update,
+    successful_payment_update,
     text_update,
 )
 
@@ -455,3 +459,83 @@ async def test_refused_rows_hold_no_content(
     assert row is not None
     assert row.first_seen_at == clock.now and row.attempts == 1
     assert await db_session.scalar(select(func.count()).select_from(AccessEvent)) == 0
+
+
+# --- payments allow-list (specs/015 T014, research P7) -----------------------------------------
+
+
+def _stub_dispatcher(
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    clock: FrozenClock,
+    reached: list[str],
+) -> Dispatcher:
+    """Only the user lookup, the gate and catch-all stubs: what the gate lets through is
+    recorded in ``reached``, whatever the real routers would do with it."""
+    dispatcher = Dispatcher(storage=PostgresFSMStorage(session_factory))
+    middleware = UserContextMiddleware(session_factory)
+    gate = AccessGateMiddleware(session_factory, settings, clock=clock)
+    for observer in (dispatcher.message, dispatcher.callback_query):
+        observer.outer_middleware(middleware)
+        observer.outer_middleware(gate)
+    router = Router(name="stub")
+
+    async def message_stub(message: Message) -> None:
+        reached.append(
+            "successful_payment"
+            if message.successful_payment
+            else "refunded_payment"
+            if message.refunded_payment
+            else message.text or ""
+        )
+
+    async def callback_stub(callback: CallbackQuery) -> None:
+        reached.append(f"callback:{callback.data}")
+        await callback.answer()
+
+    router.message.register(message_stub)
+    router.callback_query.register(callback_stub, F.data)
+    dispatcher.include_router(router)
+    return dispatcher
+
+
+@pytest.mark.parametrize(
+    "update_name",
+    ["successful_payment", "refunded_payment", "pay:offer", "/paysupport", "/terms", "state"],
+)
+async def test_payment_updates_pass_the_gate_without_the_refusal_cooldown(
+    db_session: AsyncSession,
+    session_factory: async_sessionmaker[AsyncSession],
+    gated: Settings,
+    clock: FrozenClock,
+    update_name: str,
+) -> None:
+    reached: list[str] = []
+    bot, api = offline_bot()
+    dispatcher = _stub_dispatcher(session_factory, gated, clock, reached)
+    if update_name == "successful_payment":
+        update = successful_payment_update(STRANGER, f"sub1:{uuid.uuid4()}", "charge-gate-1")
+    elif update_name == "refunded_payment":
+        update = refunded_payment_update(STRANGER, f"sub1:{uuid.uuid4()}", "charge-gate-1")
+    elif update_name == "pay:offer":
+        update = callback_update(STRANGER, "pay:offer")
+    elif update_name == "state":
+        storage = PostgresFSMStorage(session_factory)
+        key = StorageKey(bot_id=bot.id, chat_id=STRANGER, user_id=STRANGER)
+        await storage.set_state(key, PaySupportStates.describe)
+        update = text_update(STRANGER, "my payment did not go through")
+    else:
+        update = text_update(STRANGER, update_name)
+    await dispatcher.feed_update(bot, update)
+
+    assert len(reached) == 1  # the handler ran
+    assert _non_answer_requests(api) == []  # no refusal text
+    assert await _refused_row(db_session, STRANGER) is None  # the cooldown was not touched
+
+    # A plain message from the same sender (out of any payments state) is still refused.
+    await dispatcher.fsm.get_context(bot, STRANGER, STRANGER).clear()
+    await dispatcher.feed_update(bot, text_update(STRANGER, "hello there"))
+    assert len(reached) == 1
+    assert api.sent_texts == [_refused(gated)]
+    row = await _refused_row(db_session, STRANGER)
+    assert row is not None and row.attempts == 1

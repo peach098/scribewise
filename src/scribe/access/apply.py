@@ -11,7 +11,9 @@ Q13; contracts/control-chat.md "Beta application flow").
   the application (consent given now), confirms, and sends it to every operator as plain text
   with **Approve** / **Reject** (``betaapp:approve:<id>``, ``betaapp:reject:<id>``).
 - **Subscription** sends a placeholder (plus the subscription contact, if set) and stores
-  nothing.
+  nothing. When payments are available (specs/015) it shows the Stars offer instead, or the
+  manage view of a running Stars subscription; the pending and rejected replies then carry the
+  **Subscription** button too.
 - The decision buttons answer only operators; anyone else gets a silent answer. The first
   decision wins: :func:`notify_decision` (shared with ``scribe.admin``) edits every operator
   copy to show it and tells the applicant.
@@ -40,10 +42,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from scribe.access import applications, policy, repo
 from scribe.access.applications import ApplyBlock, BlockKind, Decision
 from scribe.clock import Clock, utcnow
-from scribe.config import Settings
+from scribe.config import Settings, payments_available
 from scribe.db.models import BetaApplication, BetaApplicationStatus, User
 from scribe.i18n import DEFAULT_LANG, Lang, format_day_month_year, normalize_lang, t
 from scribe.logging import get_logger
+from scribe.payments.telegram import StarsApi, StarsApiError
+from scribe.payments.views import subscription_screen
 from scribe.telegram.control_bot.render import (
     InvalidCallbackData,
     button,
@@ -87,14 +91,26 @@ def block_text(block: ApplyBlock, lang: str) -> str:
     return t("access.apply_rejected_recently", lang, date=_day(block.until, lang))
 
 
+def subscription_keyboard(lang: str) -> InlineKeyboardMarkup:
+    return keyboard([[button(t("btn.apply_subscription", lang), "apply:subinfo")]])
+
+
 async def no_access_reply(
-    session: AsyncSession, telegram_id: int, *, has_account: bool, lang: str, now: datetime
+    session: AsyncSession,
+    telegram_id: int,
+    *,
+    has_account: bool,
+    lang: str,
+    now: datetime,
+    settings: Settings | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
     """``access.refused`` (no account) or ``access.ended_reply`` with the two buttons; the
-    pending or recently-rejected notice without buttons instead when applying is blocked."""
+    pending or recently-rejected notice instead when applying is blocked, with only the
+    **Subscription** button when payments are available (specs/015 US1 scenario 5), else none."""
     block = await applications.can_apply(session, telegram_id, now)
     if block is not None:
-        return block_text(block, lang), None
+        pay = settings is not None and payments_available(settings)
+        return block_text(block, lang), subscription_keyboard(lang) if pay else None
     key = "access.ended_reply" if has_account else "access.refused"
     return t(key, lang), offer_keyboard(lang)
 
@@ -381,18 +397,32 @@ async def send_callback(
 
 
 async def subscription_callback(
-    callback: CallbackQuery, bot: Bot, settings: Settings, lang: Lang
+    callback: CallbackQuery,
+    bot: Bot,
+    session_factory: async_sessionmaker[AsyncSession],
+    settings: Settings,
+    lang: Lang,
+    user: User | None = None,
+    stars_api: StarsApi | None = None,
+    clock: Clock = utcnow,
 ) -> None:
+    """**Subscription** (``apply:subinfo``, also ``pay:offer``): the Stars offer, the manage
+    view of a running subscription, or the placeholder when payments are not available."""
     await callback.answer()
     if not settings.access_gate:
         return
-    text = t("access.subscription_placeholder", lang)
-    if settings.subscription_contact:
-        line = t(
-            "access.subscription_line", lang, subscription_contact=settings.subscription_contact
-        )
-        text = f"{text}\n{line}"
-    await bot.send_message(_chat_id(callback), text)
+    sender = callback.from_user
+    async with session_factory() as session:
+        try:
+            text, markup = await subscription_screen(
+                session, stars_api, settings, sender.id, user=user, lang=lang, now=clock()
+            )
+            await session.commit()
+        except StarsApiError as exc:  # no link could be made: no offer row either
+            await session.rollback()
+            log.warning("stars_offer_created", result="error", error=str(exc))
+            text, markup = t("pay.try_again", lang), None
+    await bot.send_message(_chat_id(callback), text, reply_markup=markup)
 
 
 # --- the operator's decision -------------------------------------------------------------------
@@ -477,4 +507,6 @@ __all__ = [
     "operator_languages",
     "operator_text",
     "send_to_operators",
+    "subscription_callback",
+    "subscription_keyboard",
 ]

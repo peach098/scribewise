@@ -15,6 +15,16 @@ compares every user's computed access (:func:`scribe.access.policy.status`, keye
   write ``subscription_reminded``. After the commit: send ``access.sub_reminder`` to people that
   have an account.
 
+Stars subscriptions (specs/015): each run first ends the Stars subscriptions that are due
+(:func:`scribe.payments.lifecycle.end_due`), before access is computed. When the last access
+source of a lost user was a Stars subscription, the notice is ``pay.ended_canceled``,
+``pay.ended_failed`` or ``pay.ended_expired`` (with **Subscription**) instead of
+``access.ended_notice``, and nothing after a refund (``pay.refunded`` was sent). The reminder
+depends on the period's Stars subscription: ``pay.renew_reminder`` (renewing, with **Cancel
+subscription**), ``pay.end_reminder`` (cancelled, with **Turn renewal back on**); an operator
+subscription keeps ``access.sub_reminder``, which points to **Subscription** when payments are
+available.
+
 With the gate **off** nobody is gated: every suspended user is regained (event meta
 ``{"reason": "gate_off"}``), so turning the gate off undoes its suspensions. Nothing else happens.
 
@@ -31,27 +41,35 @@ from typing import Protocol
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.access import policy
 from scribe.access import repo as access_repo
 from scribe.clock import Clock, utcnow
-from scribe.config import Settings
+from scribe.config import Settings, payments_available
 from scribe.db.models import (
     AccessEvent,
     AccessEventKind,
     Draft,
     DraftState,
+    Payment,
     SessionStatus,
+    StarsSubscription,
+    StarsSubState,
     Subscription,
+    SubscriptionSource,
     TelegramSession,
     User,
 )
 from scribe.i18n import Msg, format_day_month_year
 from scribe.logging import get_logger
+from scribe.payments import lifecycle
+from scribe.payments.offers import price_text
 from scribe.scheduling.deadlines import expire_draft
 from scribe.scheduling.scheduler import Every, Scheduler
+from scribe.telegram.control_bot.render import button, keyboard
 
 log = get_logger("scribe.access")
 
@@ -85,6 +103,7 @@ class _Change:
     lang: str
     reason: str | None = None  # lost only
     session_active: bool = True  # regained only
+    stars_reason: str | None = None  # lost only: how the last Stars subscription ended
 
 
 @dataclass(frozen=True)
@@ -93,6 +112,9 @@ class _Reminder:
     lang: str
     timezone: str
     ends_at: datetime
+    kind: str = "operator"  # operator | renew | end (specs/015: the period's Stars state)
+    price: int | None = None  # renew only
+    can_resume: bool = False  # end only: the subscription is cancelled, not failed
 
 
 async def reconcile_access(
@@ -110,6 +132,7 @@ async def reconcile_access(
     lost: list[_Change] = []
     regained: list[_Change] = []
     async with session_factory() as session:
+        await lifecycle.end_due(session, now=now)  # specs/015: before access is computed
         users = list((await session.scalars(select(User).order_by(User.created_at))).all())
         statuses = await access_repo.bulk_status(session, settings, users, now=now)
         for user in users:
@@ -118,8 +141,21 @@ async def reconcile_access(
             if not status.has_access and user.access_suspended_at is None:
                 subs = await access_repo.subscriptions_for(session, telegram_id)
                 reason = await _loss_reason(session, telegram_id, subs, now)
+                stars_reason = (
+                    await _stars_loss(session, subs)
+                    if reason == REASON_SUBSCRIPTION_ENDED
+                    else None
+                )
                 await _suspend(session, user, reason, now)
-                lost.append(_Change(user.id, telegram_id, user.language, reason=reason))
+                lost.append(
+                    _Change(
+                        user.id,
+                        telegram_id,
+                        user.language,
+                        reason=reason,
+                        stars_reason=stars_reason,
+                    )
+                )
             elif status.has_access and user.access_suspended_at is not None:
                 regained.append(await _restore(session, user, now))
         reminded, reminders = await _remind(session, settings, users, now)
@@ -216,6 +252,26 @@ async def _loss_reason(
     return REASON_BETA_REMOVED  # also a pre-gate user who was never listed
 
 
+async def _stars_loss(session: AsyncSession, subs: list[Subscription]) -> str | None:
+    """How the Stars subscription ended (``canceled``, ``failed``, ``expired``, ``refunded``)
+    when the last access period of the person came from one (specs/015), else ``None``."""
+    if not subs:
+        return None
+    last = max(
+        subs, key=lambda sub: sub.cancelled_at if sub.cancelled_at is not None else sub.ends_at
+    )
+    if last.source is not SubscriptionSource.stars or last.payment_id is None:
+        return None
+    stars = await session.scalar(
+        select(StarsSubscription)
+        .join(Payment, Payment.stars_subscription_id == StarsSubscription.id)
+        .where(Payment.id == last.payment_id)
+    )
+    if stars is None or stars.state is not StarsSubState.ended or stars.ended_reason is None:
+        return None
+    return stars.ended_reason.value
+
+
 async def _suspend(session: AsyncSession, user: User, reason: str, now: datetime) -> None:
     user.access_suspended_at = now
     pending = await session.scalars(
@@ -283,6 +339,7 @@ async def _remind(
     betas = await access_repo.betas_by_id(session, ids)
     subs = await access_repo.subscriptions_by_id(session, ids)
     accounts = {user.telegram_control_chat_id: user for user in users}
+    stars_of = await _stars_of_periods(session, [sub.payment_id for sub in due if sub.payment_id])
     reminders: dict[int, _Reminder] = {}
     marked = 0
     for sub in due:
@@ -303,10 +360,35 @@ async def _remind(
         )
         user = accounts.get(telegram_id)
         if user is not None and telegram_id not in reminders:
-            reminders[telegram_id] = _Reminder(
-                telegram_id, user.language, user.timezone, sub.ends_at
+            reminders[telegram_id] = _reminder_for(
+                sub, stars_of.get(sub.payment_id) if sub.payment_id else None, user
             )
     return marked, list(reminders.values())
+
+
+async def _stars_of_periods(
+    session: AsyncSession, payment_ids: list[uuid.UUID]
+) -> dict[uuid.UUID, StarsSubscription]:
+    """The Stars subscription of each ``stars`` access period, by the period's payment id."""
+    if not payment_ids:
+        return {}
+    rows = await session.execute(
+        select(Payment.id, StarsSubscription)
+        .join(StarsSubscription, StarsSubscription.id == Payment.stars_subscription_id)
+        .where(Payment.id.in_(payment_ids))
+    )
+    return {payment_id: stars for payment_id, stars in rows}
+
+
+def _reminder_for(sub: Subscription, stars: StarsSubscription | None, user: User) -> _Reminder:
+    """Which reminder fits this period: renewing, ending (cancelled or failed), or the
+    operator-granted one (also for a Stars period tied to no subscription)."""
+    base = (user.telegram_control_chat_id, user.language, user.timezone, sub.ends_at)
+    if stars is None:
+        return _Reminder(*base)
+    if stars.state is StarsSubState.active:
+        return _Reminder(*base, kind="renew", price=stars.price_stars)
+    return _Reminder(*base, kind="end", can_resume=stars.state is StarsSubState.canceled)
 
 
 def _extends(other: Subscription, sub: Subscription) -> bool:
@@ -336,13 +418,22 @@ async def _after_lost(pool: ClientLifecycle, bot: Bot, settings: Settings, chang
         log.warning(
             "access_client_stop_failed", user_id=str(change.user_id), error=type(exc).__name__
         )
-    text = Msg("access.ended_notice", reason_text=Msg(f"access.reason_{change.reason}")).render(
-        change.lang
-    )
-    if settings.subscription_contact:
-        line = Msg("access.subscription_line", subscription_contact=settings.subscription_contact)
-        text = f"{text}\n{line.render(change.lang)}"
-    await _notify(bot, change, text, "access_lost")
+    if change.stars_reason == "refunded":
+        return  # pay.refunded already told the person (specs/015)
+    markup: InlineKeyboardMarkup | None = None
+    if change.stars_reason in ("canceled", "failed", "expired"):
+        text = Msg(f"pay.ended_{change.stars_reason}").render(change.lang)
+        markup = keyboard([[button(Msg("btn.pay_subscription").render(change.lang), "pay:offer")]])
+    else:
+        text = Msg("access.ended_notice", reason_text=Msg(f"access.reason_{change.reason}")).render(
+            change.lang
+        )
+        if settings.subscription_contact:
+            line = Msg(
+                "access.subscription_line", subscription_contact=settings.subscription_contact
+            )
+            text = f"{text}\n{line.render(change.lang)}"
+    await _notify(bot, change, text, "access_lost", markup)
 
 
 async def _after_regained(pool: ClientLifecycle, bot: Bot, change: _Change) -> None:
@@ -365,17 +456,39 @@ async def _send_reminder(bot: Bot, settings: Settings, reminder: _Reminder) -> N
     except (ValueError, KeyError):  # a bad stored zone never blocks the reminder
         zone = ZoneInfo("UTC")
     day = format_day_month_year(reminder.ends_at.astimezone(zone).date(), reminder.lang)
-    renew = settings.subscription_contact or Msg("access.renew_send_start")
-    text = Msg("access.sub_reminder", date=day, renew=renew).render(reminder.lang)
+    markup: InlineKeyboardMarkup | None = None
+    if reminder.kind == "renew":
+        text = Msg("pay.renew_reminder", date=day, price=price_text(reminder.price or 0)).render(
+            reminder.lang
+        )
+        markup = keyboard([[button(Msg("btn.pay_cancel").render(reminder.lang), "pay:cancel")]])
+    elif reminder.kind == "end":
+        text = Msg("pay.end_reminder", date=day).render(reminder.lang)
+        if reminder.can_resume:
+            markup = keyboard([[button(Msg("btn.pay_resume").render(reminder.lang), "pay:resume")]])
+    else:
+        renew = settings.subscription_contact or Msg("access.renew_send_start")
+        if payments_available(settings):  # specs/015: pay with Stars instead
+            renew = Msg("pay.renew_with_stars")
+            markup = keyboard(
+                [[button(Msg("btn.pay_subscription").render(reminder.lang), "pay:offer")]]
+            )
+        text = Msg("access.sub_reminder", date=day, renew=renew).render(reminder.lang)
     try:
-        await bot.send_message(reminder.chat_id, text)
+        await bot.send_message(reminder.chat_id, text, reply_markup=markup)
     except Exception as exc:  # blocked bot, network: one user never stops the others
         log.warning("access_reminder_failed", error=type(exc).__name__)
 
 
-async def _notify(bot: Bot, change: _Change, text: str, transition: str) -> None:
+async def _notify(
+    bot: Bot,
+    change: _Change,
+    text: str,
+    transition: str,
+    markup: InlineKeyboardMarkup | None = None,
+) -> None:
     try:
-        await bot.send_message(change.chat_id, text)
+        await bot.send_message(change.chat_id, text, reply_markup=markup)
     except Exception as exc:  # blocked bot, network: one user never stops the others
         log.warning(
             "access_notice_failed",

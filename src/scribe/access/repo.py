@@ -27,6 +27,7 @@ from scribe.db.models import (
     Subscription,
     User,
 )
+from scribe.payments import repo as payments_repo
 
 MAX_REASON_CHARS = 200
 # ``access_events.telegram_id`` of events about a username-only beta entry that no one has
@@ -115,7 +116,14 @@ async def access_status(
     """Load the person's rows and apply :func:`scribe.access.policy.status`."""
     beta = await find_beta(session, telegram_id, username, now=now)
     subs = await subscriptions_for(session, telegram_id)
-    return policy.status(beta, subs, is_operator=policy.is_operator(telegram_id, settings), now=now)
+    renewing = await payments_repo.renewing_payment_ids(session, telegram_id)  # specs/015 grace
+    return policy.status(
+        beta,
+        subs,
+        is_operator=policy.is_operator(telegram_id, settings),
+        now=now,
+        renewing_payment_ids=renewing,
+    )
 
 
 async def betas_by_id(session: AsyncSession, ids: Sequence[int]) -> dict[int, BetaEntry]:
@@ -144,12 +152,14 @@ async def bulk_status(
     ids = [user.telegram_control_chat_id for user in users]
     betas = await betas_by_id(session, ids)
     subs = await subscriptions_by_id(session, ids)
+    renewing = await payments_repo.renewing_payment_ids_bulk(session, ids)  # specs/015 grace
     return {
         user.id: policy.status(
             betas.get(user.telegram_control_chat_id),
             subs.get(user.telegram_control_chat_id, []),
             is_operator=policy.is_operator(user.telegram_control_chat_id, settings),
             now=now,
+            renewing_payment_ids=renewing,
         )
         for user in users
     }

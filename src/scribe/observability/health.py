@@ -1,9 +1,10 @@
 """``GET /healthz`` for container health checks (no public API exists).
 
-Response: ``{"status": "ok" | "degraded", "users_active": <int>, "access_gate": <bool>}``;
-HTTP 200 when ok, 503 when degraded (database unreachable, scheduler stalled or control bot not
-polling). ``access_gate`` is ``Settings.access_gate`` (specs/005 research Q9), reported in both
-cases so the operator sees the mode at a glance.
+Response: ``{"status": "ok" | "degraded", "users_active": <int>, "access_gate": <bool>,
+"payments_enabled": <bool>}``; HTTP 200 when ok, 503 when degraded (database unreachable,
+scheduler stalled or control bot not polling). ``access_gate`` is ``Settings.access_gate``
+(specs/005 research Q9) and ``payments_enabled`` is ``Settings.payments_enabled`` (specs/015
+research P14), reported in both cases so the operator sees the mode at a glance.
 """
 
 from __future__ import annotations
@@ -27,7 +28,9 @@ class HealthStatus:
 StatusProvider = Callable[[], Awaitable[HealthStatus]]
 
 
-def create_app(status: StatusProvider, *, access_gate: bool = False) -> web.Application:
+def create_app(
+    status: StatusProvider, *, access_gate: bool = False, payments_enabled: bool = False
+) -> web.Application:
     async def healthz(request: web.Request) -> web.Response:
         try:
             current = await status()
@@ -38,6 +41,7 @@ def create_app(status: StatusProvider, *, access_gate: bool = False) -> web.Appl
             "status": "ok" if current.ok else "degraded",
             "users_active": current.users_active,
             "access_gate": access_gate,
+            "payments_enabled": payments_enabled,
         }
         return web.json_response(body, status=200 if current.ok else 503)
 
@@ -48,9 +52,16 @@ def create_app(status: StatusProvider, *, access_gate: bool = False) -> web.Appl
 
 class HealthServer:
     def __init__(
-        self, status: StatusProvider, *, host: str, port: int, access_gate: bool = False
+        self,
+        status: StatusProvider,
+        *,
+        host: str,
+        port: int,
+        access_gate: bool = False,
+        payments_enabled: bool = False,
     ) -> None:
-        self._runner = web.AppRunner(create_app(status, access_gate=access_gate), access_log=None)
+        app = create_app(status, access_gate=access_gate, payments_enabled=payments_enabled)
+        self._runner = web.AppRunner(app, access_log=None)
         self._host = host
         self._port = port
         self.port: int | None = None

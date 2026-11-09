@@ -61,6 +61,7 @@ async def test_service_boots_reports_health_and_stops(
                 "status": "ok",
                 "users_active": 0,
                 "access_gate": False,
+                "payments_enabled": False,  # specs/015
             }
     finally:
         await service.stop()
@@ -79,6 +80,7 @@ async def test_service_boots_reports_health_and_stops(
         "reencrypt_profiles",
         "refresh_profiles",
         "release_notes",
+        "stars_reconcile",  # specs/015
     ]
     assert any(type(r).__name__ == "SetMyCommands" for r in api.requests)
 

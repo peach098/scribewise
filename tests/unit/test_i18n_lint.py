@@ -26,6 +26,7 @@ USER_FACING_MODULES = sorted(
         *(SRC / "telegram" / "control_bot").glob("*.py"),
         SRC / "access" / "gate.py",
         SRC / "access" / "apply.py",
+        *(SRC / "payments").glob("*.py"),  # specs/015
         SRC / "telegram" / "client_pool.py",
         SRC / "intake" / "router.py",
         SRC / "intake" / "events.py",
