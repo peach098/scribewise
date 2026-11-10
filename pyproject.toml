@@ -8,8 +8,8 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "telethon>=1.36",
     "aiogram>=3",
-    "anthropic>=2.3.0",
-    "openai>=3.41.0",
+    "anthropic>=2.6.0",
+    "openai>=3.46.0",
     "sqlalchemy[asyncio]>=2.1.6",
     "asyncpg>=0.29",
     "alembic>=1.20.1",
@@ -30,7 +30,7 @@ dev = [
     "pytest-asyncio>=1.4.1",
     "respx>=0.21",
     "testcontainers[postgres]>=4.15.0",
-    "ruff>=0.17.3",
+    "ruff>=0.17.4",
     "mypy>=2.4.1",
     "types-pyyaml>=6.0.12.20261030",
 ]
