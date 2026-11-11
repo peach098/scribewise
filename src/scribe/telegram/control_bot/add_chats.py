@@ -16,6 +16,12 @@
   (``chat_picker.AbandonedPickerMiddleware``, registered in ``bot.py``) and is answered as
   usual; free text → a one-line hint; buttons of a closed picker → "This list is closed".
 
+Usage limits (docs/plugins.md): under a ``max_work_chats`` limit ➕ answers
+``chats.limit_reached`` (with the offer provider's buttons) when no more chat can be enabled,
+the picker lets the user tick only as many chats as are left (``chat_picker``), Done refuses
+(adding nothing) if the limit was reached meanwhile, and learning from the new chats is
+skipped when the profile rebuild is not available.
+
 Work account mode (specs/008 FR-011): while it is on, every private chat already is a work chat,
 so the picker (purpose ``add_groups``) lists only groups.
 
@@ -35,15 +41,19 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from scribe.access.apply import OfferProvider
 from scribe.clock import Clock, utcnow
+from scribe.config import Settings
 from scribe.db.models import ActivityKind, SessionStatus, User, UserState
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import users as users_repo
 from scribe.db.repos.chats import NewWorkChat
+from scribe.drafting.budget import LimitsResolver
 from scribe.i18n import Lang, t
 from scribe.logging import get_logger
 from scribe.telegram.control_bot import chat_picker, profile_command
+from scribe.telegram.control_bot.limits import chat_slots, refuse_chat_limit, usage_of
 from scribe.telegram.control_bot.render import reconnect_keyboard
 from scribe.telegram.gateway import MessagingGateway
 
@@ -66,6 +76,9 @@ async def add_chats_callback(
     session_factory: async_sessionmaker[AsyncSession],
     gateway: MessagingGateway,
     lang: Lang,
+    settings: Settings | None = None,
+    limits: LimitsResolver | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     if user is None or user.state == UserState.setting_up:
         await callback.answer(t("common.not_set_up", lang))
@@ -73,6 +86,10 @@ async def add_chats_callback(
     await callback.answer()
     if await state.get_state() == AddChatsStates.picking.state:
         await state.clear()  # a second ➕ closes the previous picker
+    limit, room = await chat_slots(session_factory, user, limits, settings)
+    if limit is not None and room == 0:
+        await refuse_chat_limit(bot, user, limit, offer_provider, session_factory)
+        return
     chat_id = user.telegram_control_chat_id
     async with session_factory() as session:
         connection = await users_repo.get_telegram_session(session, user.id)
@@ -110,6 +127,13 @@ async def finish_add(done: chat_picker.PickResult) -> None:
         NewWorkChat(chat_id, title, chat_picker.chat_kind(kind))
         for chat_id, title, kind in done.chosen
     ]
+    limit, room = await chat_slots(
+        session_factory, user, services.get("limits"), services.get("settings"), clock
+    )
+    if limit is not None and len(new) > room:  # the limit was reached meanwhile
+        await callback.answer()
+        await refuse_chat_limit(bot, user, limit, services.get("offer_provider"), session_factory)
+        return
     async with session_factory() as session:
         created = await chats_repo.add_work_chats(session, user.id, new)
         if created:
@@ -144,6 +168,12 @@ async def _learn_new_chats(done: chat_picker.PickResult, new_ids: set[int]) -> N
     needed = ("settings", "llm_router", "gateway")
     if any(services.get(name) is None for name in needed):
         log.warning("add_chats_learn_skipped", user_id=str(done.user.id), reason="no_services")
+        return
+    usage = await usage_of(
+        services["session_factory"], done.user, services.get("limits"), services["settings"]
+    )
+    if not usage.profile_refresh_allowed:  # a usage limit (docs/plugins.md)
+        log.info("add_chats_learn_skipped", user_id=str(done.user.id), reason="not_allowed")
         return
     await profile_command.rebuild_profiles(
         done.bot,

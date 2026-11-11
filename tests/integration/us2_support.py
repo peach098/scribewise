@@ -42,6 +42,7 @@ class US2Harness(US1Harness):
             cards=self.presenter,
             gate=self.gate,
             marker=self.marker,
+            limits=self.limits,
         )
         if self.marker is not None:
             self.gateway.on_unread_mark_cleared(self.marker.handle_unread_mark_cleared)

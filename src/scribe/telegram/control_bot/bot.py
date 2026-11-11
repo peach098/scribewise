@@ -10,6 +10,10 @@
   disconnect buttons pressed by anyone but the chat's owner. After the gate,
   ``chat_picker.AbandonedPickerMiddleware`` closes an open ➕ Add work chats picker when another
   command is sent (specs/007).
+- Plugins (docs/plugins.md): ``routers_first`` are included before every core router (so a
+  plugin's handler answers a core callback such as ``apply:subinfo`` first), ``routers`` after
+  them; ``open_paths`` and ``offer_provider`` go to the access gate. ``offer_provider``,
+  ``limits`` and ``privacy_hooks`` are also workflow data for the handlers that use them.
 - FSM state lives in Postgres (``PostgresFSMStorage``) so it survives restarts.
 - Shared services (``session_factory``, ``settings``, and whatever ``__main__`` adds:
   ``llm_router``, ``gateway``, ``client_pool``, ``clock``, ``telegram_login``) are dispatcher
@@ -29,10 +33,11 @@ from aiogram.types import CallbackQuery, Message, TelegramObject
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.access import apply
-from scribe.access.gate import AccessGateMiddleware
+from scribe.access.gate import AccessGateMiddleware, OpenPaths
 from scribe.clock import utcnow
 from scribe.config import Settings
 from scribe.db.repos import users as users_repo
+from scribe.drafting.budget import SettingsLimitsResolver
 from scribe.i18n import Lang, language_for_code, normalize_lang
 from scribe.telegram.control_bot import (
     add_chats,
@@ -46,6 +51,7 @@ from scribe.telegram.control_bot import (
     tasks_command,
     telegram_command,
 )
+from scribe.telegram.control_bot.limits import UsageLimitsMiddleware
 from scribe.telegram.control_bot.render import help_text
 from scribe.telegram.control_bot.settings import create_router as create_settings_router
 
@@ -106,6 +112,8 @@ def create_dispatcher(
     settings: Settings,
     storage: BaseStorage,
     routers: list[Router] | None = None,  # fresh instances: a router attaches only once
+    routers_first: list[Router] | None = None,  # plugins: before the core routers
+    open_paths: OpenPaths | None = None,  # plugins: gate paths for people without access
     **workflow_data: Any,
 ) -> Dispatcher:
     dispatcher = Dispatcher(
@@ -114,9 +122,23 @@ def create_dispatcher(
     middleware = UserContextMiddleware(session_factory)
     dispatcher.message.outer_middleware(middleware)
     dispatcher.callback_query.outer_middleware(middleware)
+    limits = workflow_data.get("limits")
+    if limits is not None and not isinstance(limits, SettingsLimitsResolver):
+        # A plugin's per-user limits (docs/plugins.md), resolved once per update.
+        usage = UsageLimitsMiddleware(
+            session_factory, limits, clock=workflow_data.get("clock", utcnow)
+        )
+        dispatcher.message.outer_middleware(usage)
+        dispatcher.callback_query.outer_middleware(usage)
     # specs/005: right after the user lookup, so it sees ``user`` and ``lang``; a no-op while
     # ``settings.access_gate`` is off. Inline queries have no user lookup: the gate does its own.
-    gate = AccessGateMiddleware(session_factory, settings, clock=workflow_data.get("clock", utcnow))
+    gate = AccessGateMiddleware(
+        session_factory,
+        settings,
+        clock=workflow_data.get("clock", utcnow),
+        open_paths=open_paths,
+        offer=workflow_data.get("offer_provider"),
+    )
     dispatcher.message.outer_middleware(gate)
     dispatcher.callback_query.outer_middleware(gate)
     dispatcher.inline_query.outer_middleware(gate)
@@ -146,7 +168,7 @@ def create_dispatcher(
         auto_send_flow.create_router(),  # specs/014: autoconfirm:<chat>:<manual|offer|no>
         edit_prefill.create_router(),  # inline queries (✏️ Edit in input field)
     ]
-    for router in [*base, *(routers or [])]:
+    for router in [*(routers_first or []), *base, *(routers or [])]:
         dispatcher.include_router(router)
     return dispatcher
 

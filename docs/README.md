@@ -17,6 +17,7 @@
 **Working on Scribe**
 
 - [Architecture](architecture.md): how a message becomes a draft, the code map
+- [Plugins](plugins.md): the extension points a plugin module can use
 - [Contributing](../CONTRIBUTING.md) and the [security policy](../SECURITY.md)
 - Feature designs: [`specs/`](../specs/); project rules: [constitution](../.specify/memory/constitution.md)
 - [Publishing the landing page](deploy-s3.md) (in Russian)

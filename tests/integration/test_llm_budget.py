@@ -29,7 +29,7 @@ from scribe.db.models import (
 )
 from scribe.db.repos import llm_spend as llm_spend_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import BudgetCaps, BudgetGuard
+from scribe.drafting.budget import BudgetCaps, BudgetGuard, SettingsLimitsResolver
 from scribe.llm.adapters.fake import FakeAdapter
 from scribe.llm.provider import RouteName, Usage
 from scribe.llm.registry import LLMRouter
@@ -189,7 +189,10 @@ async def test_hard_cap_skips_turns_without_a_model_call_and_notifies_once(
     assert len(harness.notifications) == 1
     # A restart (a new guard) still finds today's notice.
     restarted = BudgetGuard(
-        harness.session_factory, BudgetCaps(1.0, 3.0), notifier=None, clock=clock
+        harness.session_factory,
+        SettingsLimitsResolver(BudgetCaps(1.0, 3.0)),
+        notifier=None,
+        clock=clock,
     )
     assert await restarted.notify_paused(user.id) is False
 

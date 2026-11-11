@@ -18,6 +18,10 @@ binds the locale to the current update through a context variable, which does no
 messages sent from background jobs. A plain dict is typed, needs no build step, and lets a test
 check that both catalogs have the same keys and placeholders.
 
+Plugins add their own texts with :func:`register_messages` (``PluginHost.add_messages``,
+docs/plugins.md): they live next to the core catalogs, and a key the core or another plugin
+already has is refused.
+
 Dates and times never use the system locale: month and weekday names live in the catalogs
 (:func:`format_when`, :func:`format_day_month`, :func:`format_weekday_date`,
 :func:`format_date_time`).
@@ -42,6 +46,8 @@ RUSSIAN_DEFAULT_CODES = frozenset({"ru", "uk", "be", "kk"})
 
 Entry = str | Mapping[str, str]
 CATALOGS: dict[Lang, Mapping[str, Entry]] = {"en": en.CATALOG, "ru": ru.CATALOG}
+# Texts added by plugins at startup (register_messages); never overriding a core key.
+PLUGIN_CATALOGS: dict[Lang, dict[str, Entry]] = {"en": {}, "ru": {}}
 PLURAL_FORMS: dict[Lang, frozenset[str]] = {
     "en": frozenset({"one", "other"}),
     "ru": frozenset({"one", "few", "many"}),
@@ -102,8 +108,32 @@ class LocalizedError(ValueError):
         return self.msg.render(lang)
 
 
-def _template(key: str, lang: Lang, params: Mapping[str, Any]) -> str:
+def register_messages(lang: str, texts: Mapping[str, Entry]) -> None:
+    """Add a plugin's texts for ``lang`` (``en`` or ``ru``). Raises ``ValueError`` for another
+    language or a key that already exists (in the core catalog or from a plugin); nothing is
+    added then."""
+    if lang not in LANGUAGES:
+        raise ValueError(f"unknown language {lang!r}; expected one of {', '.join(LANGUAGES)}")
+    language: Lang = "ru" if lang == "ru" else "en"
+    taken = sorted(k for k in texts if k in CATALOGS[language] or k in PLUGIN_CATALOGS[language])
+    if taken:
+        raise ValueError(f"{lang} texts already exist: {', '.join(taken)}")
+    PLUGIN_CATALOGS[language].update(texts)
+
+
+def clear_plugin_messages() -> None:
+    """Forget every plugin text (tests)."""
+    for catalog in PLUGIN_CATALOGS.values():
+        catalog.clear()
+
+
+def _entry(key: str, lang: Lang) -> Entry | None:
     entry = CATALOGS[lang].get(key)
+    return entry if entry is not None else PLUGIN_CATALOGS[lang].get(key)
+
+
+def _template(key: str, lang: Lang, params: Mapping[str, Any]) -> str:
+    entry = _entry(key, lang)
     if entry is None:
         raise KeyError(f"no {lang} text for {key!r}")
     if isinstance(entry, str):
@@ -122,7 +152,7 @@ def t(key: str, lang: str | None = DEFAULT_LANG, /, **params: Any) -> str:
 
 
 def has_text(key: str) -> bool:
-    return key in CATALOGS[DEFAULT_LANG]
+    return _entry(key, DEFAULT_LANG) is not None
 
 
 def render(text: Msg | str, lang: str | None) -> str:
@@ -225,7 +255,9 @@ __all__ = [
     "Lang",
     "LocalizedError",
     "Msg",
+    "PLUGIN_CATALOGS",
     "PLURAL_FORMS",
+    "clear_plugin_messages",
     "format_date_time",
     "format_day_month",
     "format_day_month_year",
@@ -238,6 +270,7 @@ __all__ = [
     "normalize_lang",
     "placeholders",
     "plural_form",
+    "register_messages",
     "render",
     "t",
     "weekday_abbr",

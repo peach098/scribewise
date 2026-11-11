@@ -1399,6 +1399,28 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "budget.paused_alert": (
         "⏸ Today's AI usage limit is reached. Drafting resumes automatically at {time} your time."
     ),
+    "budget.drafts_notice": (
+        "⏸ You've used all of today's drafts, so I've paused drafting for the rest of the day. "
+        "New messages get no draft today; you'll find them in /skipped.\n"
+        "Drafting resumes automatically at {time} your time (midnight UTC)."
+    ),
+    # --- usage limits per user (docs/plugins.md) ---
+    "chats.limit_reached": {
+        "one": "You can have at most {n} work chat enabled. Turn one off first in /chats.",
+        "other": "You can have at most {n} work chats enabled. Turn one off first in /chats.",
+    },
+    "settings.work_account_unavailable": (
+        "💼 Work account mode isn't available on your account: it would enable every private "
+        "chat. Pick your work chats in /chats instead."
+    ),
+    "profile.rebuild_unavailable": (
+        "🔄 Rebuilding your style profiles isn't available on your account."
+    ),
+    "settings.profile_refresh_state.unavailable": "not available",
+    "btn.profile_refresh_unavailable": "🔄 Profile refresh: not available",
+    "settings.profile_refresh_unavailable": (
+        "🔄 The automatic profile refresh isn't available on your account."
+    ),
     "spend_alert.header": {
         "one": "📊 LLM spend on {day} (UTC): {n} user, {total} in total.",
         "other": "📊 LLM spend on {day} (UTC): {n} users, {total} in total.",

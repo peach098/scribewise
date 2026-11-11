@@ -213,6 +213,11 @@ async def count_auto(session: AsyncSession, user_id: uuid.UUID) -> int:
     return await _count(session, user_id, WorkChat.origin == WorkChatOrigin.auto)
 
 
+async def count_enabled(session: AsyncSession, user_id: uuid.UUID) -> int:
+    """The user's enabled work chats (what a usage limit on work chats counts)."""
+    return await _count(session, user_id, WorkChat.enabled.is_(True))
+
+
 def is_excluded(chat: WorkChat) -> bool:
     """The Python twin of the excluded clause, for one loaded row."""
     if chat.kind != ChatKind.private:

@@ -94,6 +94,7 @@ from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import messages as messages_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
+from scribe.drafting.budget import LimitsResolver
 from scribe.drafting.reply_gate import GateDecision, is_forwards_only, is_skip_candidate
 from scribe.i18n import Msg
 from scribe.intake.locks import CHAT_LOCKS, ChatLocks
@@ -241,9 +242,11 @@ class IntakeRouter:
         notifier: Notifier | None = None,
         locks: ChatLocks | None = None,
         gate: PendingGate | None = None,
+        limits: LimitsResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
+        self._limits = limits  # a plugin's work chat limit for pick-up (docs/plugins.md)
         self._clock = clock
         self._notifier = notifier
         self._gate = gate
@@ -373,6 +376,7 @@ class IntakeRouter:
                 peer_kind=message.peer_kind,
                 direction="in",
                 now=self._clock(),
+                limits=self._limits,
             )
         rule = ChatRule.of(chat) if chat is not None else None
         if chat is None or rule is None or not rule.enabled or message.is_outgoing:

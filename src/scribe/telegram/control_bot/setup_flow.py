@@ -51,6 +51,7 @@ from scribe.style.grammatical_gender import recent_texts
 from scribe.style.importer import ImportResult, import_own_messages
 from scribe.style.profiles import BuildSummary, build_global_profile, build_profiles_from_import
 from scribe.telegram.control_bot import chat_picker, connect_flow, grammatical_gender
+from scribe.telegram.control_bot.limits import chat_slots
 from scribe.telegram.control_bot.menu import set_chat_commands
 from scribe.telegram.control_bot.render import (
     button,
@@ -182,6 +183,15 @@ async def finish_pick(done: chat_picker.PickResult) -> None:
     clock: Clock = done.services.get("clock", utcnow)
     if not done.chosen and not done.work_account:
         await callback.answer(t("setup.pick_none", lang))
+        return
+    # A usage limit on work chats (docs/plugins.md); the picker already refuses the taps.
+    limits, settings = done.services.get("limits"), done.services.get("settings")
+    limit, room = await chat_slots(session_factory, user, limits, settings, clock)
+    if limit is not None and done.work_account:
+        await callback.answer(t("settings.work_account_unavailable", lang), show_alert=True)
+        return
+    if limit is not None and len(done.chosen) > room:
+        await callback.answer(t("chats.limit_reached", lang, n=limit), show_alert=True)
         return
     await callback.answer()
     async with session_factory() as session:

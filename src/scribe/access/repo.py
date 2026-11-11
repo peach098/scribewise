@@ -179,6 +179,31 @@ async def record_event(
     return event
 
 
+async def record_plugin_event(
+    session: AsyncSession,
+    telegram_id: int,
+    event: str,
+    *,
+    actor: str,
+    reason: str | None = None,
+    meta: dict[str, Any] | None = None,
+    now: datetime,
+) -> AccessEvent:
+    """A plugin's own access event (docs/plugins.md): ``kind=plugin``, the event name in
+    ``meta_json["event"]`` (``python -m scribe.admin access show`` prints it)."""
+    if not event:
+        raise ValueError("a plugin access event needs a name")
+    return await record_event(
+        session,
+        telegram_id,
+        AccessEventKind.plugin,
+        actor=actor,
+        reason=reason,
+        meta={**(meta or {}), "event": event},
+        now=now,
+    )
+
+
 def _meta_value(value: Any) -> Any:
     if isinstance(value, datetime | date):
         return value.isoformat()

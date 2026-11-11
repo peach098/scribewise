@@ -21,6 +21,8 @@
   ``release-notes send <version> [--dry-run]``, ``release-notes status [--all]``: release notes
   for users after an update (specs/011-release-notes, contracts/operator-cli.md). ``send`` only
   queues deliveries; the running service sends them. These commands never contact Telegram.
+- Plugins (``SCRIBE_PLUGINS``, docs/plugins.md) may add their own commands
+  (``register_admin(subparsers)``).
 - ``cost [--days N]``: LLM spend per user per UTC day, split by route, for the last ``N`` days
   including today (default 7), from ``llm_spend`` (issue #67): calls, tokens and USD. User ids
   only, no names. A day on which a user reached the daily soft or hard cap (issue #74) is marked;
@@ -69,7 +71,8 @@ from scribe.db.models import (
 )
 from scribe.db.repos import llm_spend as llm_spend_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import BudgetCaps
+from scribe.drafting.budget import BudgetCaps, LimitsResolver, user_limits
+from scribe.plugins import AdminHandler, PluginError, admin_commands
 from scribe.release_notes import announce as release_announce
 from scribe.release_notes import version as release_version
 from scribe.release_notes.notes import (
@@ -654,9 +657,17 @@ async def _show_unlinked(session: AsyncSession, who: Who) -> list[str]:
     ]
 
 
+def event_name(event: AccessEvent) -> str:
+    """The kind, or for a plugin's event (``kind=plugin``) the name it stored."""
+    if event.kind == AccessEventKind.plugin:
+        name = (event.meta_json or {}).get("event")
+        return f"plugin:{name}" if isinstance(name, str) and name else AccessEventKind.plugin.value
+    return event.kind.value
+
+
 def _event_line(event: AccessEvent) -> str:
     return (
-        f"{event.at.astimezone(UTC):%Y-%m-%d %H:%M}  {event.kind.value}  {event.actor}  "
+        f"{event.at.astimezone(UTC):%Y-%m-%d %H:%M}  {event_name(event)}  {event.actor}  "
         f"{event.reason or '-'}"
     )
 
@@ -909,13 +920,19 @@ async def cost_report(
     days: int,
     now: datetime,
     caps: BudgetCaps | None = None,
+    limits: LimitsResolver | None = None,
 ) -> list[str]:
     """$/user/day split by route over the last ``days`` UTC days (today included); with
-    ``caps`` (issue #74) each day of a user that reached a daily cap is marked."""
+    ``caps`` (issue #74) each day of a user that reached a daily cap is marked (each user's
+    current caps from ``limits`` when a plugin set them; the excluded routes not counted)."""
     today = now.astimezone(UTC).date()
     since = today - timedelta(days=days - 1)
+    user_caps: dict[uuid.UUID, BudgetCaps] = {}
     async with session_factory() as session:
         rows = await llm_spend_repo.daily(session, since)
+        if caps is not None and limits is not None:
+            for user_id in {row.user_id for row in rows}:
+                user_caps[user_id] = (await user_limits(session, user_id, limits, now)).caps
     if not rows:
         return [f"no LLM spend recorded since {since}"]
     by_day_user: dict[tuple[date, uuid.UUID], list[LLMSpend]] = defaultdict(list)
@@ -929,7 +946,13 @@ async def cost_report(
         total = sum((r.cost_usd for r in routes), Decimal(0))
         per_user[user_id] += total
         calls = sum(r.calls for r in routes)
-        mark = CAP_MARKS.get(caps.level(total), "") if caps is not None else ""
+        mark = ""
+        if caps is not None:
+            own = user_caps.get(user_id, caps)
+            counted = sum(
+                (r.cost_usd for r in routes if r.route not in own.excluded_routes), Decimal(0)
+            )
+            mark = CAP_MARKS.get(own.level(counted), "")
         lines.append(f"{day}  {user_id}  {_usd(total)}  {calls} calls{mark}")
         lines.extend(_route_line(r) for r in sorted(routes, key=lambda r: -r.cost_usd))
     grand = sum(per_user.values(), Decimal(0))
@@ -944,7 +967,14 @@ async def cost_report(
     return lines
 
 
-def _parser() -> argparse.ArgumentParser:
+def _parser(plugins: Sequence[str] = ()) -> argparse.ArgumentParser:
+    return _build_parser(plugins)[0]
+
+
+def _build_parser(
+    plugins: Sequence[str] = (),
+) -> tuple[argparse.ArgumentParser, dict[str, AdminHandler]]:
+    """The parser with the core commands and those of the plugin modules (docs/plugins.md)."""
     parser = argparse.ArgumentParser(prog="python -m scribe.admin")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list-users", help="list accounts (no personal data)")
@@ -1015,7 +1045,7 @@ def _parser() -> argparse.ArgumentParser:
     cost.add_argument(
         "--days", type=parse_days, default=7, help="UTC days back, today included (default 7)"
     )
-    return parser
+    return parser, admin_commands(commands, plugins)
 
 
 async def run(
@@ -1025,11 +1055,15 @@ async def run(
     clock: Clock = utcnow,
     settings: Settings | None = None,
     bot: Bot | None = None,
+    limits: LimitsResolver | None = None,
 ) -> int:
-    """Run one command; ``settings`` (for the operator ids) defaults to the environment's.
-    ``bot`` sends the notices of ``beta approve`` / ``beta reject``; without one they are
-    skipped."""
-    args = _parser().parse_args(list(argv))
+    """Run one command; ``settings`` (for the operator ids and the plugin modules) defaults to
+    the environment's. ``bot`` sends the notices of ``beta approve`` / ``beta reject``; without
+    one they are skipped. ``limits``: per-user caps for ``cost`` (default: the deployment's)."""
+    parser, plugin_handlers = _build_parser(settings.plugins if settings is not None else ())
+    args = parser.parse_args(list(argv))
+    if args.command in plugin_handlers:
+        return await plugin_handlers[args.command](args, session_factory, settings, clock)
     if args.command == "beta":
         return await run_beta(args, session_factory, clock(), bot)
     if args.command == "sub":
@@ -1040,7 +1074,8 @@ async def run(
         return await run_release_notes(args, session_factory, settings, clock())
     if args.command == "cost":
         caps = BudgetCaps.from_settings(settings) if settings is not None else None
-        print("\n".join(await cost_report(session_factory, args.days, clock(), caps)))
+        report = await cost_report(session_factory, args.days, clock(), caps, limits)
+        print("\n".join(report))
         return 0
     if args.command == "list-users":
         lines = await list_users(session_factory)
@@ -1062,7 +1097,7 @@ async def _main(argv: Sequence[str]) -> int:
     settings = get_settings()
     configure_keyring(keyring_from_settings(settings))
     engine = create_engine_from_settings(settings)
-    args = _parser().parse_args(list(argv))
+    args = _parser(settings.plugins).parse_args(list(argv))
     bot = None
     if args.command == "beta" and args.beta_command in NOTIFYING_COMMANDS:
         from scribe.telegram.control_bot.bot import create_bot
@@ -1076,9 +1111,26 @@ async def _main(argv: Sequence[str]) -> int:
         await engine.dispose()
 
 
+def _plugin_modules() -> list[str]:
+    """``SCRIBE_PLUGINS`` for the usage check; none while the configuration is incomplete
+    (``_main`` reports that)."""
+    from pydantic import ValidationError
+
+    from scribe.config import get_settings
+
+    try:
+        return get_settings().plugins
+    except ValidationError:
+        return []
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    _parser().parse_args(list(argv))  # usage errors before touching the database
+    try:
+        _parser(_plugin_modules()).parse_args(list(argv))  # usage errors before the database
+    except PluginError as exc:
+        print(f"scribe.admin: {exc}", file=sys.stderr)
+        return 2
     return asyncio.run(_main(argv))
 
 

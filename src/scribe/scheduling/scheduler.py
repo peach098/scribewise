@@ -59,7 +59,9 @@ read (or "read now"), otherwise at the next allowed moment of the user's working
 Issue #74 (``drafting/budget.py``): with a ``BudgetGuard``, a turn of a user whose daily LLM
 hard cap is reached is skipped as ``budget`` before the reply gate (no model call; listed in
 ``/skipped``) and the user gets one notice per UTC day; the composer refusing for the same
-reason (``DraftingPaused``) ends the same way.
+reason (``DraftingPaused``) ends the same way. With a plugin's per-user draft limit
+(``UsageLimits.max_drafts_per_day``) a turn of a user who reached it today is skipped the same
+way, with the notice of that reason.
 
 specs/009 (mark chats unread): with an ``UnreadMarker``, the chat is marked unread right after
 the read. The marker decides before ``mark_read`` (``prepare``) and commits after it succeeds
@@ -95,7 +97,7 @@ from scribe.db.models import (
     WorkChat,
 )
 from scribe.db.repos import jobs as jobs_repo
-from scribe.drafting.budget import BudgetGuard, DraftingPaused
+from scribe.drafting.budget import BudgetGuard, DraftingPaused, PauseReason
 from scribe.drafting.composer import ComposeError
 from scribe.drafting.reply_gate import BUDGET_SKIP, GateDecision, forwards_only_skip, record_skip
 from scribe.intake.waiting import (
@@ -787,9 +789,10 @@ class DueTurnsProcessor:
                 log.exception("due_turn_failed", turn_id=str(target.turn_id))
 
     async def _compose(self, target: ReadTarget) -> None:
-        if await self._budget_paused(target):
-            await self._pause(target)
-            return  # issue #74: no model call at the daily hard cap
+        reason = await self._budget_paused(target)
+        if reason is not None:
+            await self._pause(target, reason)
+            return  # issue #74: no model call at the daily hard cap or the draft limit
         warnings = await self._reply_gate(target)
         if warnings is None:
             return  # skipped: no draft, no card, no notification (004 FR-008)
@@ -813,19 +816,20 @@ class DueTurnsProcessor:
             except Exception as exc:
                 log.error("draft_card_failed", draft_id=str(draft.id), error=type(exc).__name__)
 
-    async def _budget_paused(self, target: ReadTarget) -> bool:
-        """The user's daily hard cap is reached (issue #74). A failed check drafts."""
+    async def _budget_paused(self, target: ReadTarget) -> PauseReason | None:
+        """Why drafting is paused for the user (issue #74: the daily hard cap, or a plugin's
+        draft limit), or None. A failed check drafts."""
         if self._budget is None:
-            return False
+            return None
         try:
-            return await self._budget.paused(target.user_id)
+            return await self._budget.pause_reason(target.user_id)
         except Exception as exc:
             log.warning(
                 "budget_check_failed", turn_id=str(target.turn_id), error=type(exc).__name__
             )
-            return False
+            return None
 
-    async def _pause(self, target: ReadTarget) -> None:
+    async def _pause(self, target: ReadTarget, reason: PauseReason = "cap") -> None:
         """Skip the turn as ``budget`` (listed in /skipped, "Draft anyway" works again the next
         UTC day) and send the day's one notice. A failed store retries the turn later."""
         try:
@@ -839,9 +843,9 @@ class DueTurnsProcessor:
         except Exception as exc:
             await self._retry_later(target, exc)
             return
-        log.info("turn_skipped_budget", turn_id=str(target.turn_id), stored=stored)
+        log.info("turn_skipped_budget", turn_id=str(target.turn_id), stored=stored, reason=reason)
         if self._budget is not None:
-            await self._budget.notify_paused(target.user_id)
+            await self._budget.notify_paused(target.user_id, reason)
 
     async def _reply_gate(self, target: ReadTarget) -> tuple[str, ...] | None:
         """``None`` when the turn was skipped (or put back to wait), else the gate's warnings

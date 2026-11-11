@@ -16,6 +16,10 @@
   🔄 Automatic profile refresh: ``settings:profile_refresh`` stores the opposite of the current
   state in ``users.profile_auto_refresh`` (NULL until the first press: the
   ``SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT`` setting applies); the refresh job skips users with it off.
+  Under a plugin's usage limit (docs/plugins.md) the default can differ per user, and without
+  the refresh allowed the switch shows "not available" and a press stores nothing. The same
+  limits refuse enabling a work chat beyond ``max_work_chats`` (``chats.limit_reached``) and
+  turning work account mode on while such a limit is set.
   👤 Gender in drafts (issue #46): ``settings:gender`` turns the /settings message into the two
   forms (``setgender:<masculine|feminine>:settings``, ``grammatical_gender.py``) with the current
   one ticked; a press stores ``users.grammatical_gender`` and renders /settings again in place.
@@ -103,7 +107,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from scribe.access.apply import ApplyStates
+from scribe.access.apply import ApplyStates, OfferProvider
 from scribe.chats import work_account
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings, get_settings
@@ -173,6 +177,13 @@ from scribe.telegram.control_bot.grammatical_gender import (
     GENDER_ACTION,
     gender_keyboard,
     gender_label,
+)
+from scribe.telegram.control_bot.limits import (
+    chat_slots,
+    current_usage,
+    refuse_chat_limit,
+    send_refusal,
+    usage_of,
 )
 from scribe.telegram.control_bot.menu import set_chat_commands
 from scribe.telegram.control_bot.ownership import OwnershipMiddleware
@@ -424,7 +435,11 @@ def settings_text(
     start, end = f"{user.work_start:%H:%M}", f"{user.work_end:%H:%M}"
     search = "on" if user.search_earlier_messages else "off"
     mark = "on" if user.mark_unread else "off"
-    refresh = "on" if profile_auto_refresh_on(user) else "off"
+    refresh = (
+        ("on" if profile_auto_refresh_on(user) else "off")
+        if profile_refresh_available()
+        else "unavailable"
+    )
     return "\n".join(
         [
             t("settings.title", lang),
@@ -461,6 +476,7 @@ def settings_keyboard(
     mark_unread: bool = True,
     auto_send_chats: int = 0,
     profile_refresh: bool = True,
+    profile_refresh_available: bool = True,
 ) -> InlineKeyboardMarkup:
     """``search_earlier``: the current ``users.search_earlier_messages`` (specs/004);
     ``work_account``: the current ``users.work_account`` (specs/008); ``mark_unread``: the
@@ -471,6 +487,8 @@ def settings_keyboard(
     mode = "btn.work_account_off" if work_account else "btn.work_account_on"
     mark = "btn.mark_unread_off" if mark_unread else "btn.mark_unread_on"
     refresh = "btn.profile_refresh_off" if profile_refresh else "btn.profile_refresh_on"
+    if not profile_refresh_available:  # a usage limit (docs/plugins.md)
+        refresh = "btn.profile_refresh_unavailable"
     return keyboard(
         [
             [
@@ -710,6 +728,7 @@ def _settings_keyboard_of(user: User, auto_send_chats: int = 0) -> InlineKeyboar
         user.mark_unread,
         auto_send_chats,
         profile_auto_refresh_on(user),
+        profile_refresh_available(),
     )
 
 
@@ -780,11 +799,24 @@ async def _toggle_mark_unread(
     await _rerender_settings(callback, bot, stored, session_factory)
 
 
+def profile_refresh_available() -> bool:
+    """Whether the user of the update may have the automatic refresh at all (a plugin's usage
+    limit, docs/plugins.md; always true without one)."""
+    usage = current_usage()
+    return usage is None or usage.profile_refresh_allowed
+
+
 def profile_auto_refresh_on(user: User) -> bool:
-    """Whether the automatic profile refresh is on: the user's choice, else the deployment
-    default (``SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT``)."""
+    """Whether the automatic profile refresh is on: the user's choice, else the default (a
+    plugin's per-user default, else ``SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT``); off when not
+    available."""
+    usage = current_usage()
+    if usage is not None and not usage.profile_refresh_allowed:
+        return False
     if user.profile_auto_refresh is not None:
         return user.profile_auto_refresh
+    if usage is not None:
+        return usage.profile_refresh_default
     try:
         return get_settings().profile_auto_refresh_default
     except Exception:  # no complete configuration (e.g. a test): the documented default
@@ -797,11 +829,17 @@ async def _toggle_profile_refresh(
     user: User,
     session_factory: async_sessionmaker[AsyncSession],
     clock: Clock,
+    offer: OfferProvider | None = None,
 ) -> None:
     """``settings:profile_refresh``: each press stores the opposite of the current state in
     ``users.profile_auto_refresh`` (from then on the user's choice, not the default) and
-    re-renders the /settings message."""
+    re-renders the /settings message. Not available under a usage limit: nothing is stored."""
     current = await _fresh_user(session_factory, user) or user
+    if not profile_refresh_available():
+        await callback.answer()
+        text = t("settings.profile_refresh_unavailable", current.language)
+        await send_refusal(bot, current, text, offer, session_factory)
+        return
     stored = await _save_user(
         session_factory,
         current,
@@ -1005,6 +1043,7 @@ async def settings_menu(
     lang: Lang,
     clock: Clock = utcnow,
     settings: Settings | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     if user is None:
         await callback.answer(t("common.not_set_up", lang))
@@ -1018,13 +1057,13 @@ async def settings_menu(
         await _toggle_search_earlier(callback, bot, user, session_factory, clock)
         return
     if item == WORK_ACCOUNT:
-        await _confirm_work_account(callback, bot, user, session_factory, settings)
+        await _confirm_work_account(callback, bot, user, session_factory, settings, offer_provider)
         return
     if item == MARK_UNREAD:
         await _toggle_mark_unread(callback, bot, user, session_factory, clock)
         return
     if item == PROFILE_REFRESH:
-        await _toggle_profile_refresh(callback, bot, user, session_factory, clock)
+        await _toggle_profile_refresh(callback, bot, user, session_factory, clock, offer_provider)
         return
     if item == AUTO_SEND_WINDOW:
         await _show_window_choice(callback, bot, user, session_factory)
@@ -1093,11 +1132,17 @@ async def _confirm_work_account(
     user: User,
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings | None,
+    offer: OfferProvider | None = None,
 ) -> None:
-    """``settings:work_account``: the turn-on or turn-off confirmation, with what it means."""
+    """``settings:work_account``: the turn-on or turn-off confirmation, with what it means.
+    Turning it on is refused under a work chat limit (docs/plugins.md)."""
     current = await _fresh_user(session_factory, user) or user
     lang = current.language
     await callback.answer()
+    if not current.work_account and await _work_account_limited(session_factory, current):
+        text = t("settings.work_account_unavailable", lang)
+        await send_refusal(bot, current, text, offer, session_factory)
+        return
     if current.work_account:
         async with session_factory() as session:
             preview = await work_account.preview_off(session, current.id)
@@ -1123,6 +1168,13 @@ async def _confirm_work_account(
     )
 
 
+async def _work_account_limited(
+    session_factory: async_sessionmaker[AsyncSession], user: User
+) -> bool:
+    """Work account mode would enable every private chat: not under a work chat limit."""
+    return (await usage_of(session_factory, user, None)).max_work_chats is not None
+
+
 async def work_account_callback(
     callback: CallbackQuery,
     bot: Bot,
@@ -1130,6 +1182,7 @@ async def work_account_callback(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     """``wacct:<on|off|cancel>``. A button for the state the mode is already in (an old
     confirmation) changes nothing and shows the current /settings."""
@@ -1146,6 +1199,11 @@ async def work_account_callback(
     await _close_buttons(bot, callback)
     if choice == "cancel":
         await callback.answer(t("settings.work_account_cancelled", lang))
+        return
+    if choice == "on" and await _work_account_limited(session_factory, user):
+        await callback.answer()
+        text = t("settings.work_account_unavailable", lang)
+        await send_refusal(bot, user, text, offer_provider, session_factory)
         return
     now = clock()
     result = await work_account.switch(session_factory, user.id, on=choice == "on", now=now)
@@ -1798,6 +1856,7 @@ async def chat_option_callback(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     """``chatformal:<id>:<1-5|clear>``, ``chatenable:<id>:<on|off>``,
     ``chatskip:<id>:<inherit|off|on>`` (004). The legacy ``chatgroup:<id>:<mode>`` (buttons on
@@ -1813,6 +1872,12 @@ async def chat_option_callback(
     if action == "chatauto":
         await _auto_send_callback(callback, bot, current, chat, extra, session_factory, clock)
         return
+    if action == "chatenable" and extra == "on" and not chat.enabled:
+        limit, room = await chat_slots(session_factory, current, None)
+        if limit is not None and room == 0:  # a usage limit (docs/plugins.md)
+            await callback.answer()
+            await refuse_chat_limit(bot, current, limit, offer_provider, session_factory)
+            return
     if action == "chatenable" and _work_account_screen(chat, current.work_account):
         await _exclude_or_include(callback, bot, current, chat, extra, session_factory, clock)
         return

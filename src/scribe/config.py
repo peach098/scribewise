@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     # the next UTC day (docs/configuration.md "Daily LLM budget per user").
     llm_daily_soft_cap_usd: float = Field(default=1.0, ge=0)
     llm_daily_hard_cap_usd: float = Field(default=3.0, ge=0)
+    # Routes whose spend is not counted for the daily caps (still recorded and shown by
+    # ``python -m scribe.admin cost``). Env: comma-separated, e.g. "profile.build".
+    llm_budget_excluded_routes: Annotated[list[str], NoDecode] = Field(default_factory=list)
     style_import_months: int = Field(default=6, ge=1)
     profile_examples_contact: int = Field(default=20, ge=0)
     profile_examples_global: int = Field(default=50, ge=0)
@@ -195,6 +198,11 @@ class Settings(BaseSettings):
     subscription_contact: str = ""
     access_refusal_cooldown_s: int = Field(default=3600, gt=0)  # FR-006, research Q5
 
+    # --- plugins (docs/plugins.md) ------------------------------------------------------------
+    # Python modules whose ``setup(host)`` is called at startup. Env: comma-separated module
+    # names, e.g. "my_company.scribe_plugin"; empty (the default): no plugin, nothing changes.
+    plugins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
     # --- release notes (specs/011-release-notes) -----------------------------------------------
     release_notes_dir: Path = Path("release-notes")  # relative to /app in the image
     release_notes_auto: bool = True  # announce a new version at startup (FR-008)
@@ -244,6 +252,18 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return [part.strip() for part in value.split(",") if part.strip()]
         return value
+
+    @field_validator("plugins", "llm_budget_excluded_routes", mode="before")
+    @classmethod
+    def _split_names(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return value
+
+    @field_validator("plugins", "llm_budget_excluded_routes")
+    @classmethod
+    def _unique_names(cls, value: list[str]) -> list[str]:
+        return list(dict.fromkeys(part.strip() for part in value if part.strip()))
 
     @field_validator("jira_allowed_ports", mode="before")
     @classmethod

@@ -15,10 +15,17 @@ from aiogram import Bot, Dispatcher
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from scribe.access.apply import OfferProvider
 from scribe.config import Settings
 from scribe.db.models import Contact, Draft, User, WorkChat
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import BudgetCaps, BudgetGuard
+from scribe.drafting.budget import (
+    BudgetGuard,
+    LimitsResolver,
+    MarkupFactory,
+    NoticeDecorator,
+    SettingsLimitsResolver,
+)
 from scribe.drafting.composer import Composer
 from scribe.drafting.reply_gate import ReplyGate
 from scribe.i18n import Msg
@@ -119,6 +126,11 @@ class US1Harness:
     notifications: list[tuple[uuid.UUID, str]] = field(default_factory=list)
     # specs/009: wire an UnreadMarker into the scheduler and the review callbacks.
     with_unread_marker: bool = False
+    # Plugins (docs/plugins.md): per-user limits and the notice decorator, wired as in the service.
+    limits: LimitsResolver | None = None
+    decorate: NoticeDecorator | None = None
+    offer_provider: OfferProvider | None = None
+    notice_markups: list[MarkupFactory | None] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         self.marker = (
@@ -131,27 +143,34 @@ class US1Harness:
         self.bot: Bot
         self.api: RecordingSession
         self.bot, self.api = offline_bot()
+        if self.limits is None:
+            self.limits = SettingsLimitsResolver.from_settings(self.settings)
         self.gate = ReplyGate(
-            self.session_factory, self.llm_router, self.settings, clock=self.clock
-        )
+            self.session_factory, self.llm_router, self.settings, clock=self.clock,
+            limits=self.limits,
+        )  # fmt: skip
         self.intake = IntakeRouter(
             self.session_factory,
             self.settings,
             clock=self.clock,
             notifier=self._notify,
             gate=self.gate,
+            limits=self.limits,
         )
         self.gateway.on_new_message(self.intake.handle_new_message)
         self.composer = Composer(
-            self.session_factory, self.llm_router, self.settings, clock=self.clock
-        )
+            self.session_factory, self.llm_router, self.settings, clock=self.clock,
+            limits=self.limits,
+        )  # fmt: skip
         self.presenter = DraftPresenter(self.bot, self.session_factory, clock=self.clock)
         # Issue #74, as in the service: the daily LLM hard cap skips turns with one notice.
+        assert self.limits is not None
         self.budget = BudgetGuard(
             self.session_factory,
-            BudgetCaps.from_settings(self.settings),
+            self.limits,
             notifier=self._notify,
             clock=self.clock,
+            decorate=self.decorate,
         )
         self.scheduler = Scheduler(self.session_factory, tick_s=5, clock=self.clock)
         self.scheduler.on_due_turns(
@@ -177,17 +196,22 @@ class US1Harness:
             gateway=self.gateway,
             clock=self.clock,
             unread_marker=self.marker,
+            limits=self.limits,
+            offer_provider=self.offer_provider,
         )
 
     def set_reply_needed(self, response: FakeResponse) -> None:
         """Override the ``classify.reply_needed`` answer (an output, an exception or a callable)."""
         self.fake_llm.set_response("classify.reply_needed", response)
 
-    async def _notify(self, user_id: uuid.UUID, text: Msg) -> None:
+    async def _notify(
+        self, user_id: uuid.UUID, text: Msg, /, reply_markup: MarkupFactory | None = None
+    ) -> None:
         # Like the service: rendered in the user's stored language (users.language).
         async with self.session_factory() as session:
             user = await users_repo.get_user(session, user_id)
         self.notifications.append((user_id, text.render(user.language if user else None)))
+        self.notice_markups.append(reply_markup)
 
     async def incoming(
         self, user: User, chat: WorkChat, contact: Contact, text: str, **values: Any
