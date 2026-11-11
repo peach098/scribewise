@@ -13,7 +13,7 @@ compares every user's computed access (:func:`scribe.access.policy.status`, keye
 - **ending** (an active subscription, not yet reminded, ending within 3 days, and nothing else -
   beta, operator, a chained subscription - extends access past its end): set ``reminded_at``,
   write ``subscription_reminded``. After the commit: send ``access.sub_reminder`` to people that
-  have an account.
+  have an account (a plugin's notice decorator may change it and add buttons, docs/plugins.md).
 
 With the gate **off** nobody is gated: every suspended user is regained (event meta
 ``{"reason": "gate_off"}``), so turning the gate off undoes its suspensions. Nothing else happens.
@@ -48,6 +48,7 @@ from scribe.db.models import (
     TelegramSession,
     User,
 )
+from scribe.drafting.budget import NoticeDecorator
 from scribe.i18n import Msg, format_day_month_year
 from scribe.logging import get_logger
 from scribe.scheduling.deadlines import expire_draft
@@ -93,6 +94,7 @@ class _Reminder:
     lang: str
     timezone: str
     ends_at: datetime
+    user_id: uuid.UUID | None = None
 
 
 async def reconcile_access(
@@ -102,8 +104,10 @@ async def reconcile_access(
     settings: Settings,
     *,
     clock: Clock = utcnow,
+    decorate: NoticeDecorator | None = None,
 ) -> ReconcileResult:
-    """One run of the job; see the module docstring."""
+    """One run of the job; see the module docstring. ``decorate``: a plugin's change to the
+    reminder."""
     if not settings.access_gate:
         return await _restore_all(session_factory, pool, bot, now=clock())
     now = clock()
@@ -130,7 +134,7 @@ async def reconcile_access(
     for change in regained:
         await _after_regained(pool, bot, change)
     for reminder in reminders:
-        await _send_reminder(bot, settings, reminder)
+        await _send_reminder(bot, settings, reminder, decorate)
     result = ReconcileResult(
         checked=len(users), lost=len(lost), regained=len(regained), reminded=reminded
     )
@@ -181,11 +185,12 @@ def register_access_reconcile(
     bot: Bot,
     settings: Settings,
     clock: Clock = utcnow,
+    decorate: NoticeDecorator | None = None,
 ) -> None:
     """Register ``access_reconcile`` (every 60 s, due at once at start)."""
 
     async def job() -> None:
-        await reconcile_access(session_factory, pool, bot, settings, clock=clock)
+        await reconcile_access(session_factory, pool, bot, settings, clock=clock, decorate=decorate)
 
     scheduler.register_job(RECONCILE_JOB, RECONCILE_SCHEDULE, job, run_at_start=True)
 
@@ -304,7 +309,7 @@ async def _remind(
         user = accounts.get(telegram_id)
         if user is not None and telegram_id not in reminders:
             reminders[telegram_id] = _Reminder(
-                telegram_id, user.language, user.timezone, sub.ends_at
+                telegram_id, user.language, user.timezone, sub.ends_at, user.id
             )
     return marked, list(reminders.values())
 
@@ -358,17 +363,24 @@ async def _after_regained(pool: ClientLifecycle, bot: Bot, change: _Change) -> N
     await _notify(bot, change, text, "access_restored")
 
 
-async def _send_reminder(bot: Bot, settings: Settings, reminder: _Reminder) -> None:
-    """Send ``access.sub_reminder``; a Telegram error is logged and skipped."""
+async def _send_reminder(
+    bot: Bot, settings: Settings, reminder: _Reminder, decorate: NoticeDecorator | None = None
+) -> None:
+    """Send ``access.sub_reminder`` (through ``decorate`` when set); a Telegram error or a
+    failing decorator is logged and skipped."""
     try:
         zone = ZoneInfo(reminder.timezone)
     except (ValueError, KeyError):  # a bad stored zone never blocks the reminder
         zone = ZoneInfo("UTC")
     day = format_day_month_year(reminder.ends_at.astimezone(zone).date(), reminder.lang)
     renew = settings.subscription_contact or Msg("access.renew_send_start")
-    text = Msg("access.sub_reminder", date=day, renew=renew).render(reminder.lang)
+    message = Msg("access.sub_reminder", date=day, renew=renew)
     try:
-        await bot.send_message(reminder.chat_id, text)
+        markup = None
+        if decorate is not None and reminder.user_id is not None:
+            message, factory = await decorate(reminder.user_id, message)
+            markup = factory(reminder.lang) if factory is not None else None
+        await bot.send_message(reminder.chat_id, message.render(reminder.lang), reply_markup=markup)
     except Exception as exc:  # blocked bot, network: one user never stops the others
         log.warning("access_reminder_failed", error=type(exc).__name__)
 

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Collection
 from datetime import UTC, date
 from decimal import Decimal
 
@@ -88,13 +89,21 @@ async def daily(session: AsyncSession, since: date) -> list[LLMSpend]:
     return list(result.all())
 
 
-async def spent_on(session: AsyncSession, user_id: uuid.UUID, day: date) -> Decimal:
-    """The user's spend on ``day`` (UTC) over all routes; 0 when nothing was recorded."""
-    total = await session.scalar(
-        select(func.coalesce(func.sum(LLMSpend.cost_usd), 0)).where(
-            LLMSpend.user_id == user_id, LLMSpend.day == day
-        )
+async def spent_on(
+    session: AsyncSession,
+    user_id: uuid.UUID,
+    day: date,
+    *,
+    exclude_routes: Collection[str] = (),
+) -> Decimal:
+    """The user's spend on ``day`` (UTC) over all routes but ``exclude_routes``; 0 when nothing
+    was recorded."""
+    query = select(func.coalesce(func.sum(LLMSpend.cost_usd), 0)).where(
+        LLMSpend.user_id == user_id, LLMSpend.day == day
     )
+    if exclude_routes:
+        query = query.where(LLMSpend.route.not_in(sorted(exclude_routes)))
+    total = await session.scalar(query)
     return Decimal(total or 0)
 
 

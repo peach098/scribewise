@@ -71,7 +71,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from scribe.access.apply import no_access_reply
+from scribe.access.apply import OfferProvider, no_access_reply
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
 from scribe.context.commitments import parse_commitment_ref
@@ -102,7 +102,7 @@ from scribe.db.repos import profiles as profiles_repo
 from scribe.db.repos import tasks_conn as tasks_conn_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import DraftingPaused, paused_alert, paused_now
+from scribe.drafting.budget import DraftingPaused, LimitsResolver, paused_alert, paused_now
 from scribe.drafting.composer import GATE_SYSTEM_WARNINGS, Composer, DraftNoLongerPending
 from scribe.drafting.injection import hard_stops
 from scribe.drafting.placeholders import (
@@ -905,6 +905,7 @@ async def _approve_and_send(
     allow_outdated: bool = False,
     unread_marker: UnreadMarker | None = None,
     advisor: DecisionAdvisor | None = None,
+    offer: OfferProvider | None = None,
 ) -> bool:
     """Record the explicit approval of this draft, then send through ``send.py``."""
     lang = user.language
@@ -946,7 +947,12 @@ async def _approve_and_send(
         log.info("send_refused_access_suspended", draft_id=str(draft.id))
         async with session_factory() as session:
             text, markup = await no_access_reply(
-                session, user.telegram_control_chat_id, has_account=True, lang=lang, now=clock()
+                session,
+                user.telegram_control_chat_id,
+                has_account=True,
+                lang=lang,
+                now=clock(),
+                offer=offer,
             )
         await bot.send_message(user.telegram_control_chat_id, text, reply_markup=markup)
         return False
@@ -1023,6 +1029,7 @@ async def on_approve(
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
     auto_send_advisor: DecisionAdvisor | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1069,7 +1076,7 @@ async def on_approve(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, allow_outdated=anyway, unread_marker=unread_marker,
-        advisor=auto_send_advisor,
+        advisor=auto_send_advisor, offer=offer_provider,
     )  # fmt: skip
 
 
@@ -1085,6 +1092,7 @@ async def on_edit(
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
     auto_send_advisor: DecisionAdvisor | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1110,7 +1118,7 @@ async def on_edit(
         await _approve_and_send(
             bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
             clock=clock, edited_text=edited, allow_outdated=True, unread_marker=unread_marker,
-            advisor=auto_send_advisor,
+            advisor=auto_send_advisor, offer=offer_provider,
         )  # fmt: skip
         return
     was_armed = auto_send.is_armed(draft)
@@ -1144,6 +1152,7 @@ async def on_edited_text(
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
     auto_send_advisor: DecisionAdvisor | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     fsm = await state.get_data()
     text = await edited_text_of(bot, message.text or "")  # never saves the inline "@bot "
@@ -1175,7 +1184,7 @@ async def on_edited_text(
     await _approve_and_send(
         bot=bot, user=user, draft=draft, session_factory=session_factory, gateway=gateway,
         clock=clock, edited_text=text, allow_outdated=True, unread_marker=unread_marker,
-        advisor=auto_send_advisor,
+        advisor=auto_send_advisor, offer=offer_provider,
     )  # fmt: skip
 
 
@@ -1366,6 +1375,7 @@ async def on_regen(
     clock: Clock = utcnow,
     unread_marker: UnreadMarker | None = None,
     auto_send_advisor: DecisionAdvisor | None = None,
+    limits: LimitsResolver | None = None,
 ) -> None:
     owned = await _owned_draft(callback, user, session_factory, lang)
     if owned is None or user is None:
@@ -1385,7 +1395,7 @@ async def on_regen(
         log.info("regenerate_capped", draft_id=str(draft.id), limit=limit)
         await callback.answer(t("review.regen_limit", lang, n=limit), show_alert=True)
         return
-    if await paused_now(session_factory, settings, user.id, clock()):  # issue #74
+    if await paused_now(session_factory, settings, user.id, clock(), limits):  # issue #74
         alert = paused_alert(user.timezone, clock()).render(lang)
         await callback.answer(alert, show_alert=True)
         return
@@ -1402,6 +1412,7 @@ async def on_regen(
         settings,
         clock=clock,
         earlier_search=EarlierSearch(gateway, settings, clock=clock),
+        limits=limits,
     )
     _, old_warnings = draft_output_of(draft)
     try:

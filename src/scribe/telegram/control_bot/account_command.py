@@ -19,6 +19,10 @@
   deletion fails after the log-out, the Telegram session is marked ``revoked`` and the user is
   told the log-out already happened and to try again.
 
+Plugins (docs/plugins.md, :class:`PrivacyHooks`) may append sections to the ``/my_data``
+summary, add lines to the ``/delete_my_data`` question, and delete their own rows in the same
+transaction as the user row (keyed by the person's Telegram id). With no plugin nothing changes.
+
 The summary also shows the grammatical gender for drafts (issue #46; the export has it in the
 user row). Neither the summary nor the export is logged.
 """
@@ -27,6 +31,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -174,6 +179,36 @@ def summary_text(summary: DataSummary, tz: str, retention_days: int, lang: str =
     return "\n".join(lines)
 
 
+# (session, Telegram id, language) -> text lines or sections.
+PrivacyLines = Callable[[AsyncSession, int, str], Awaitable[list[str]]]
+# (session, Telegram id): delete the plugin's rows of the person; the caller commits.
+PrivacyDelete = Callable[[AsyncSession, int], Awaitable[None]]
+
+
+@dataclass
+class PrivacyHooks:
+    """Plugin hooks of ``/my_data`` and ``/delete_my_data`` (docs/plugins.md)."""
+
+    my_data: list[PrivacyLines] = field(default_factory=list)
+    delete_warning: list[PrivacyLines] = field(default_factory=list)
+    delete_user: list[PrivacyDelete] = field(default_factory=list)
+
+
+async def _plugin_lines(
+    hooks: list[PrivacyLines],
+    session_factory: async_sessionmaker[AsyncSession],
+    telegram_id: int,
+    lang: str,
+) -> list[str]:
+    if not hooks:
+        return []
+    lines: list[str] = []
+    async with session_factory() as session:
+        for hook in hooks:
+            lines.extend(await hook(session, telegram_id, lang))
+    return [line for line in lines if line]
+
+
 async def my_data_command(
     message: Message,
     user: User | None,
@@ -181,6 +216,7 @@ async def my_data_command(
     settings: Settings,
     lang: Lang,
     clock: Clock = utcnow,
+    privacy_hooks: PrivacyHooks | None = None,
 ) -> None:
     if user is None:
         await message.answer(t("common.not_set_up", lang))
@@ -193,8 +229,14 @@ async def my_data_command(
             now=clock(),
             is_operator=policy.is_operator(user.telegram_control_chat_id, settings),
         )
+    text = summary_text(summary, user.timezone, settings.message_retention_days, lang)
+    if privacy_hooks is not None:
+        sections = await _plugin_lines(
+            privacy_hooks.my_data, session_factory, user.telegram_control_chat_id, lang
+        )
+        text = "\n\n".join([text, *sections])
     await message.answer(
-        summary_text(summary, user.timezone, settings.message_retention_days, lang),
+        text,
         reply_markup=keyboard(
             [[button(t("btn.export", lang), format_callback("mydata", "export"))]]
         ),
@@ -276,16 +318,24 @@ async def delete_command(
     session_factory: async_sessionmaker[AsyncSession],
     lang: Lang,
     clock: Clock = utcnow,
+    privacy_hooks: PrivacyHooks | None = None,
 ) -> None:
     if user is None:
         await message.answer(t("common.not_set_up", lang))
         return
     now = clock()
     warning = await access_warning(session_factory, user, now, lang)
+    extra = (
+        await _plugin_lines(
+            privacy_hooks.delete_warning, session_factory, user.telegram_control_chat_id, lang
+        )
+        if privacy_hooks is not None
+        else []
+    )
     await state.set_state(DeleteStates.confirm)
     await state.set_data({"asked_at": now.isoformat()})
     ask = t("delete.ask", lang, word=CONFIRM_WORD)
-    await message.answer(f"{ask}\n\n{warning}" if warning else ask)
+    await message.answer("\n\n".join([ask, *([warning] if warning else []), *extra]))
 
 
 async def delete_confirm_input(
@@ -297,6 +347,7 @@ async def delete_confirm_input(
     gateway: MessagingGateway,
     lang: Lang,
     clock: Clock = utcnow,
+    privacy_hooks: PrivacyHooks | None = None,
 ) -> None:
     data = await state.get_data()
     if user is None:
@@ -327,6 +378,8 @@ async def delete_confirm_input(
     try:
         async with session_factory() as session:
             await delete_user_data(session, user.id)
+            for delete_hook in privacy_hooks.delete_user if privacy_hooks is not None else []:
+                await delete_hook(session, chat_id)  # a plugin's rows, same transaction
             await session.commit()
     except Exception as exc:
         # The session is logged out already: record that, so nothing tries to use it, and say
@@ -394,6 +447,9 @@ def create_router(idle: StateFilter) -> Router:
 __all__ = [
     "AbandonedDeleteMiddleware",
     "DeleteStates",
+    "PrivacyDelete",
+    "PrivacyHooks",
+    "PrivacyLines",
     "create_router",
     "log_out_telegram",
     "summary_text",

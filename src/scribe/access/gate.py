@@ -19,13 +19,20 @@ For anyone without access, ``apply:`` buttons and the messages of the applicatio
 media and ``/cancel`` while in ``ApplyStates``; other commands are not) pass to
 ``scribe.access.apply`` without counting against the cooldown (US5).
 
+Plugins (docs/plugins.md) may open more paths for anyone without access (:class:`OpenPaths`):
+commands, callback-data prefixes and message filters that reach their handlers for refused and
+restricted senders alike, without counting against the cooldown; and replace the reply's
+buttons (an offer provider, :data:`scribe.access.apply.OfferProvider`). With no plugin both are
+empty and nothing changes.
+
 Callback queries are always answered (silently) so the client's spinner stops; inline queries
 get an empty result. Logs hold only ``answered`` and ``has_account``, never an id or a username.
 """
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 from aiogram import BaseMiddleware, Bot
@@ -34,7 +41,7 @@ from aiogram.types import CallbackQuery, InlineQuery, Message, TelegramObject
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.access import policy, repo
-from scribe.access.apply import APPLY_PREFIX, ApplyStates, no_access_reply
+from scribe.access.apply import APPLY_PREFIX, ApplyStates, OfferProvider, no_access_reply
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
 from scribe.db.models import User
@@ -46,6 +53,7 @@ from scribe.telegram.control_bot.account_command import DeleteStates
 log = get_logger("scribe.access")
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
+MessageFilter = Callable[[Message], bool]
 
 # Restricted mode (no access, account exists): what still reaches its handler (FR-011).
 RESTRICTED_COMMANDS = frozenset({"my_data", "delete_my_data", "cancel"})
@@ -84,16 +92,54 @@ async def restricted_allows(event: TelegramObject, state: FSMContext | None) -> 
     return state is not None and await state.get_state() in RESTRICTED_STATES
 
 
+@dataclass(frozen=True)
+class OpenPaths:
+    """Updates that pass the gate for anyone without access (registered by plugins)."""
+
+    commands: frozenset[str] = frozenset()  # without the slash, lower case
+    callback_prefixes: tuple[str, ...] = ()
+    message_filters: tuple[MessageFilter, ...] = field(default=())
+
+    @classmethod
+    def build(
+        cls,
+        commands: Iterable[str] = (),
+        callback_prefixes: Iterable[str] = (),
+        message_filters: Iterable[MessageFilter] = (),
+    ) -> OpenPaths:
+        return cls(
+            frozenset(c.lstrip("/").lower() for c in commands),
+            tuple(callback_prefixes),
+            tuple(message_filters),
+        )
+
+    def allows(self, event: TelegramObject) -> bool:
+        if isinstance(event, CallbackQuery):
+            return bool(self.callback_prefixes) and (event.data or "").startswith(
+                self.callback_prefixes
+            )
+        if not isinstance(event, Message):
+            return False
+        if self.commands and command_name(event.text) in self.commands:
+            return True
+        return any(check(event) for check in self.message_filters)
+
+
 class AccessGateMiddleware(BaseMiddleware):
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         settings: Settings,
         clock: Clock = utcnow,
+        *,
+        open_paths: OpenPaths | None = None,
+        offer: OfferProvider | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._settings = settings
         self._clock = clock
+        self._open = open_paths or OpenPaths()
+        self._offer = offer
 
     async def __call__(self, handler: Handler, event: TelegramObject, data: dict[str, Any]) -> Any:
         if not self._settings.access_gate:
@@ -122,6 +168,8 @@ class AccessGateMiddleware(BaseMiddleware):
             return await handler(event, data)
         raw_state = data.get("state")
         state = raw_state if isinstance(raw_state, FSMContext) else None
+        if self._open.allows(event):  # a plugin's open path (docs/plugins.md)
+            return await handler(event, data)
         if await apply_allows(event, state):
             if (
                 user is not None
@@ -145,7 +193,12 @@ class AccessGateMiddleware(BaseMiddleware):
             )
             if answered:
                 text, markup = await no_access_reply(
-                    session, sender.id, has_account=user is not None, lang=lang, now=now
+                    session,
+                    sender.id,
+                    has_account=user is not None,
+                    lang=lang,
+                    now=now,
+                    offer=self._offer,
                 )
             await session.commit()
         log.info("access_refused", answered=answered, has_account=user is not None)
@@ -204,6 +257,8 @@ __all__ = [
     "RESTRICTED_COMMANDS",
     "RESTRICTED_STATES",
     "AccessGateMiddleware",
+    "MessageFilter",
+    "OpenPaths",
     "apply_allows",
     "command_name",
     "restricted_allows",

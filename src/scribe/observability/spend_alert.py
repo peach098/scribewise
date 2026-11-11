@@ -8,7 +8,8 @@ message, in the operator's stored language, listing by ``users.id``:
   with any spend; only from :data:`PERCENTILE_MIN_USERS` such users on, below that one or two
   heavy users would make every percentile meaningless, so the alert says it was skipped);
 - users who reached the hard cap (drafting was paused) and, separately, those who reached only
-  the soft cap (drafts on the economy tier), by the caps configured now.
+  the soft cap (drafts on the economy tier), by the caps configured now (each user's own caps
+  when a plugin sets per-user limits, docs/plugins.md; the excluded routes not counted).
 
 User ids and amounts only: no names, chats or message content. Nothing is sent when no section
 has anyone in it, or when no operator is configured.
@@ -30,7 +31,13 @@ from scribe.access.apply import operator_languages
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
 from scribe.db.repos import llm_spend as llm_spend_repo
-from scribe.drafting.budget import BudgetCaps, utc_day
+from scribe.drafting.budget import (
+    BudgetCaps,
+    LimitsResolver,
+    SettingsLimitsResolver,
+    user_limits,
+    utc_day,
+)
 from scribe.i18n import DEFAULT_LANG, t
 from scribe.logging import get_logger
 from scribe.scheduling.scheduler import Daily, Scheduler
@@ -66,8 +73,19 @@ def nearest_rank(values: list[Decimal], fraction: float) -> Decimal:
     return ordered[rank - 1]
 
 
-def build_alert(day: date, totals: Mapping[uuid.UUID, Decimal], caps: BudgetCaps) -> SpendAlert:
+def build_alert(
+    day: date,
+    totals: Mapping[uuid.UUID, Decimal],
+    caps: BudgetCaps,
+    *,
+    user_caps: Mapping[uuid.UUID, BudgetCaps] | None = None,
+    counted: Mapping[uuid.UUID, Decimal] | None = None,
+) -> SpendAlert:
+    """``user_caps``: a user's own caps instead of ``caps``; ``counted``: the spend the cap
+    check counts (without the excluded routes) instead of the total."""
     spenders = {user_id: total for user_id, total in totals.items() if total > 0}
+    own = user_caps or {}
+    checked = counted if counted is not None else spenders
 
     def by_amount(ids: list[uuid.UUID]) -> list[tuple[uuid.UUID, Decimal]]:
         return sorted(((u, spenders[u]) for u in ids), key=lambda item: (-item[1], str(item[0])))
@@ -77,7 +95,7 @@ def build_alert(day: date, totals: Mapping[uuid.UUID, Decimal], caps: BudgetCaps
     if len(spenders) >= PERCENTILE_MIN_USERS:
         p95 = nearest_rank(list(spenders.values()), PERCENTILE)
         above = [u for u, total in spenders.items() if total > p95]
-    levels = {u: caps.level(total) for u, total in spenders.items()}
+    levels = {u: own.get(u, caps).level(checked.get(u, Decimal(0))) for u in spenders}
     return SpendAlert(
         day=day,
         users=len(spenders),
@@ -118,16 +136,35 @@ async def send_spend_alert(
     settings: Settings,
     *,
     clock: Clock = utcnow,
+    limits: LimitsResolver | None = None,
 ) -> int:
-    """Report yesterday (UTC) to every operator; how many messages were sent."""
+    """Report yesterday (UTC) to every operator; how many messages were sent. ``limits``: the
+    users' own caps (default: the deployment caps for everyone)."""
     operators = settings.operator_telegram_ids
     if not operators:
         return 0
-    day = utc_day(clock()) - timedelta(days=1)
+    now = clock()
+    day = utc_day(now) - timedelta(days=1)
     caps = BudgetCaps.from_settings(settings)
+    user_caps: dict[uuid.UUID, BudgetCaps] = {}
+    counted: dict[uuid.UUID, Decimal] | None = None
     async with session_factory() as session:
         totals = await llm_spend_repo.totals_on(session, day)
-    alert = build_alert(day, totals, caps)
+        if limits is not None and not isinstance(limits, SettingsLimitsResolver):
+            for user_id in totals:
+                user_caps[user_id] = (await user_limits(session, user_id, limits, now)).caps
+        excluded = set(caps.excluded_routes).union(*(c.excluded_routes for c in user_caps.values()))
+        if excluded:
+            counted = {
+                user_id: await llm_spend_repo.spent_on(
+                    session,
+                    user_id,
+                    day,
+                    exclude_routes=user_caps.get(user_id, caps).excluded_routes,
+                )
+                for user_id in totals
+            }
+    alert = build_alert(day, totals, caps, user_caps=user_caps, counted=counted)
     if alert.empty:
         log.info("spend_alert_nothing_to_report", day=day.isoformat(), users=alert.users)
         return 0
@@ -162,9 +199,10 @@ def register_spend_alert_job(
     bot: Bot,
     settings: Settings,
     clock: Clock = utcnow,
+    limits: LimitsResolver | None = None,
 ) -> None:
     async def job() -> None:
-        await send_spend_alert(session_factory, bot, settings, clock=clock)
+        await send_spend_alert(session_factory, bot, settings, clock=clock, limits=limits)
 
     scheduler.register_job(JOB_NAME, JOB_SCHEDULE, job)
 

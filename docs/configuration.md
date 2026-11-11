@@ -62,6 +62,7 @@ you set them.
 | --- | --- | --- |
 | `SCRIBE_LLM_DAILY_SOFT_CAP_USD` | 1.00 | From this much LLM spend in a day, the user's drafts use the `economy` tier of `compose.draft`. 0 turns it off |
 | `SCRIBE_LLM_DAILY_HARD_CAP_USD` | 3.00 | From this much, drafting pauses for the user until the next day. 0 turns it off |
+| `SCRIBE_LLM_BUDGET_EXCLUDED_ROUTES` | empty | Comma-separated routes, e.g. `profile.build`, whose spend does not count towards the caps. It is still recorded and shown by `python -m scribe.admin cost` |
 
 A day is a UTC day, the same day `python -m scribe.admin cost` shows. Spend is the
 `cost_usd` of every billed call made for the user, priced from `SCRIBE_LLM_PRICES_PATH`; calls on
@@ -213,6 +214,7 @@ Details: [release-notes.md](release-notes.md).
 | `SCRIBE_LLM_ROUTES_PATH` | `config/llm_routes.yml` | LLM route table |
 | `SCRIBE_LLM_PRICES_PATH` | `config/llm_prices.yml` | Model prices, used for cost figures: the `cost_usd` of each `llm_call` log line and the per-user daily spend shown by `python -m scribe.admin cost`. Supports 1-hour cache write prices (`cache_write_1h_input_per_m`, default 2 x input) and time-of-day discounts (`off_peak`, used for DeepSeek's off-peak half price) |
 | `SCRIBE_PROMPTS_DIR` | `prompts` | Prompt templates |
+| `SCRIBE_PLUGINS` | empty | Comma-separated Python modules loaded at startup, see [Plugins](plugins.md). Empty: no plugin, nothing changes |
 | `SCRIBE_LLM__<ROUTE>__<FIELD>` | — | Override one value of the route table, e.g. `SCRIBE_LLM__COMPOSE_DRAFT__QUALITY__MODEL=claude-sonnet-5-5`, or a provider's, e.g. `SCRIBE_LLM__PROVIDERS__OPENAI_COMPAT__DATA_USE_CONFIRMED=true`; see [Choosing models](self-hosting.md#choosing-models). `SCRIBE_LLM__PROVIDERS__ANTHROPIC__CACHE_TTL` (`1h` by default, or `5m`) sets the lifetime of the Anthropic prompt-cache entries for the draft and filter system prompts and the style profile: 1-hour writes cost 2 x input, 5-minute ones 1.25 x |
 
 Docker Compose only (not read by the app):

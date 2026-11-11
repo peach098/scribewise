@@ -39,6 +39,11 @@ Work account mode (specs/008, contracts/control-chat.md):
   for ➕ while the mode is on). "Exclusion" here never means the ``exclude`` parameter, which
   leaves chats out of the list.
 
+Usage limits (docs/plugins.md): under a ``max_work_chats`` limit (the ``limits`` resolver of
+the workflow data) a tap that would tick more chats than may still be enabled answers
+``chats.limit_reached``, and the 💼 switch cannot be turned on. With the default resolver
+nothing is checked (no query).
+
 :class:`AbandonedPickerMiddleware` closes an open picker when another command is sent, so the
 command is answered as usual and the picker can no longer add anything (research R5).
 """
@@ -61,10 +66,14 @@ from aiogram.types import (
     Message,
     TelegramObject,
 )
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from scribe.config import Settings
 from scribe.db.models import ChatKind, User
+from scribe.drafting.budget import LimitsResolver
 from scribe.i18n import Lang, t
 from scribe.logging import get_logger
+from scribe.telegram.control_bot.limits import chat_slots, usage_of
 from scribe.telegram.control_bot.render import button, format_callback, parse_callback
 from scribe.telegram.gateway import Dialog, MessagingGateway
 
@@ -306,7 +315,16 @@ def _prompt(spec: PickerPurpose, data: dict[str, Any], lang: str) -> str:
     return t(spec.prompt_key, lang)
 
 
-async def pick_toggle(callback: CallbackQuery, bot: Bot, state: FSMContext, lang: Lang) -> None:
+async def pick_toggle(
+    callback: CallbackQuery,
+    bot: Bot,
+    state: FSMContext,
+    lang: Lang,
+    user: User | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    settings: Settings | None = None,
+    limits: LimitsResolver | None = None,
+) -> None:
     data = await state.get_data()
     spec = await _live_purpose(callback, data, lang)
     if spec is None:
@@ -324,7 +342,13 @@ async def pick_toggle(callback: CallbackQuery, bot: Bot, state: FSMContext, lang
     if spec.exclusions_only or (data.get("work_account") and kinds[chat_id] == "private"):
         data["excluded"] = sorted(set(data.get("excluded", [])) ^ {chat_id})
     else:
-        data["selected"] = sorted(set(data.get("selected", [])) ^ {chat_id})
+        selected = set(data.get("selected", []))
+        if chat_id not in selected and user is not None and session_factory is not None:
+            limit, room = await chat_slots(session_factory, user, limits, settings)
+            if limit is not None and len(selected) >= room:  # a usage limit (docs/plugins.md)
+                await callback.answer(t("chats.limit_reached", lang, n=limit), show_alert=True)
+                return
+        data["selected"] = sorted(selected ^ {chat_id})
     await state.set_data(data)
     await callback.answer()
     if callback.message is not None:
@@ -336,7 +360,14 @@ async def pick_toggle(callback: CallbackQuery, bot: Bot, state: FSMContext, lang
 
 
 async def pick_work_account(
-    callback: CallbackQuery, bot: Bot, state: FSMContext, lang: Lang
+    callback: CallbackQuery,
+    bot: Bot,
+    state: FSMContext,
+    lang: Lang,
+    user: User | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    settings: Settings | None = None,
+    limits: LimitsResolver | None = None,
 ) -> None:
     """``pickwa:<on|off>`` (specs/008): the 💼 switch of a purpose that has one."""
     data = await state.get_data()
@@ -351,6 +382,11 @@ async def pick_work_account(
         await callback.answer()
         return
     on = value == "on"
+    if on and user is not None and session_factory is not None:
+        usage = await usage_of(session_factory, user, limits, settings)
+        if usage.max_work_chats is not None:  # a usage limit (docs/plugins.md)
+            await callback.answer(t("settings.work_account_unavailable", lang), show_alert=True)
+            return
     kinds = {row[0]: row[2] for row in data.get("dialogs", [])}
     data["work_account"] = on
     if on:  # private chats are covered by the mode: only groups stay selected

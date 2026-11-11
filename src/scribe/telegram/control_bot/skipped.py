@@ -40,7 +40,7 @@ from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import paused_alert, paused_now
+from scribe.drafting.budget import LimitsResolver, paused_alert, paused_now
 from scribe.i18n import Lang, t
 from scribe.logging import get_logger
 from scribe.telegram.control_bot.render import (
@@ -245,6 +245,7 @@ async def on_draft_anyway(
     settings: Settings,
     lang: Lang,
     clock: Clock = utcnow,
+    limits: LimitsResolver | None = None,
 ) -> None:
     """``draftany:<turn_id>``: back to ``waiting`` (due now) for the normal draft flow."""
     data = await _callback(callback, user, lang)
@@ -256,7 +257,7 @@ async def on_draft_anyway(
         await callback.answer(t("alert.not_found", lang))
         return
     now = clock()
-    if await paused_now(session_factory, settings, user.id, now):  # issue #74
+    if await paused_now(session_factory, settings, user.id, now, limits):  # issue #74
         await callback.answer(paused_alert(user.timezone, now).render(lang), show_alert=True)
         return
     async with session_factory() as session:

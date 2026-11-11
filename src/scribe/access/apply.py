@@ -10,6 +10,9 @@ Q13; contracts/control-chat.md "Beta application flow").
   application** / **Edit** / **Cancel** (``ApplyStates.review``). **Send application** stores
   the application (consent given now), confirms, and sends it to every operator as plain text
   with **Approve** / **Reject** (``betaapp:approve:<id>``, ``betaapp:reject:<id>``).
+- A plugin may replace the two buttons (:data:`OfferProvider`, docs/plugins.md): it returns
+  the button rows of the "no access" reply for the person; the pending or recently-rejected
+  notice is unchanged.
 - **Subscription** sends a placeholder (plus the subscription contact, if set) and stores
   nothing.
 - The decision buttons answer only operators; anyone else gets a silent answer. The first
@@ -25,14 +28,14 @@ counting them against the refusal cooldown. Logs hold no ids, usernames or use c
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 
 from aiogram import Bot, F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -56,6 +59,11 @@ log = get_logger("scribe.access")
 
 APPLY_PREFIX = "apply:"  # the applicant's buttons; the gate lets them through
 DECISION_ACTION = "betaapp"
+
+
+# A plugin's buttons for someone without access (or at a usage limit): (Telegram id, language,
+# session) -> button rows. An empty list means no buttons.
+OfferProvider = Callable[[int, str, AsyncSession], Awaitable[list[list[InlineKeyboardButton]]]]
 
 
 class ApplyStates(StatesGroup):
@@ -87,15 +95,34 @@ def block_text(block: ApplyBlock, lang: str) -> str:
     return t("access.apply_rejected_recently", lang, date=_day(block.until, lang))
 
 
+async def offer_rows(
+    offer: OfferProvider | None, session: AsyncSession, telegram_id: int, lang: str
+) -> InlineKeyboardMarkup | None:
+    """The plugin's buttons for ``telegram_id`` (None: no provider or no rows)."""
+    if offer is None:
+        return None
+    rows = await offer(telegram_id, lang, session)
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
+
+
 async def no_access_reply(
-    session: AsyncSession, telegram_id: int, *, has_account: bool, lang: str, now: datetime
+    session: AsyncSession,
+    telegram_id: int,
+    *,
+    has_account: bool,
+    lang: str,
+    now: datetime,
+    offer: OfferProvider | None = None,
 ) -> tuple[str, InlineKeyboardMarkup | None]:
-    """``access.refused`` (no account) or ``access.ended_reply`` with the two buttons; the
-    pending or recently-rejected notice without buttons instead when applying is blocked."""
+    """``access.refused`` (no account) or ``access.ended_reply`` with the two buttons (or the
+    ``offer`` provider's rows instead); the pending or recently-rejected notice without
+    buttons instead when applying is blocked."""
     block = await applications.can_apply(session, telegram_id, now)
     if block is not None:
         return block_text(block, lang), None
     key = "access.ended_reply" if has_account else "access.refused"
+    if offer is not None:
+        return t(key, lang), await offer_rows(offer, session, telegram_id, lang)
     return t(key, lang), offer_keyboard(lang)
 
 
@@ -469,11 +496,13 @@ def create_router() -> Router:
 __all__ = [
     "APPLY_PREFIX",
     "ApplyStates",
+    "OfferProvider",
     "block_text",
     "create_router",
     "no_access_reply",
     "notify_decision",
     "offer_keyboard",
+    "offer_rows",
     "operator_languages",
     "operator_text",
     "send_to_operators",

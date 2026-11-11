@@ -52,7 +52,7 @@ from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import messages as messages_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import BudgetCaps, budget_level
+from scribe.drafting.budget import LimitsResolver, default_resolver, user_budget_level
 from scribe.llm.provider import (
     ContactInfo,
     HistoryItem,
@@ -244,12 +244,13 @@ class ReplyGate:
         settings: Settings,
         *,
         clock: Clock = utcnow,
+        limits: LimitsResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._router = llm_router
         self._settings = settings
         self._clock = clock
-        self._caps = BudgetCaps.from_settings(settings)
+        self._limits = default_resolver(limits, settings)
 
     async def decide_for_turn(self, user_id: uuid.UUID, turn_id: uuid.UUID) -> GateDecision:
         """Decide for a turn in ``reading``. Any failure that is not a ``ProviderError`` is
@@ -436,7 +437,7 @@ class ReplyGate:
             user = await users_repo.get_user(session, user_id)
             if turn is None or user is None or turn.skip_category is not None:
                 return None
-            if await budget_level(session, user_id, self._caps, self._clock()) == "hard":
+            if await user_budget_level(session, user_id, self._limits, self._clock()) == "hard":
                 return None  # issue #74: no model call at the daily hard cap
             chat = await chats_repo.get_work_chat(session, user_id, turn.work_chat_id)
             contact = await chats_repo.get_contact(session, user_id, turn.contact_id)
@@ -496,7 +497,7 @@ class ReplyGate:
             user = await users_repo.get_user(session, user_id)
             if message is None or user is None or message.is_outgoing:
                 raise LookupError("message not found")
-            if await budget_level(session, user_id, self._caps, self._clock()) == "hard":
+            if await user_budget_level(session, user_id, self._limits, self._clock()) == "hard":
                 return FALLBACK  # issue #74: no model call at the daily hard cap (outdated)
             chat = await chats_repo.get_work_chat(session, user_id, message.work_chat_id)
             if chat is None:

@@ -89,19 +89,22 @@ def _test_keyring() -> None:
 
 @pytest.fixture(autouse=True)
 def _reset_process_defaults() -> Iterator[None]:
-    """The task-source cache, the default commitment extractor and the deadline memo (#73)
-    never leak between tests."""
+    """The task-source cache, the default commitment extractor, the deadline memo (#73) and
+    plugin texts (docs/plugins.md) never leak between tests."""
     from scribe.context.commitments import reset_default_extractor
     from scribe.context.tasks.deadlines import default_memo
     from scribe.context.tasks.service import reset_default_task_sources
+    from scribe.i18n import clear_plugin_messages
 
     reset_default_task_sources()
     reset_default_extractor()
     default_memo().clear()
+    clear_plugin_messages()
     yield
     reset_default_task_sources()
     reset_default_extractor()
     default_memo().clear()
+    clear_plugin_messages()
 
 
 # --- logging ------------------------------------------------------------------------------------

@@ -81,6 +81,7 @@ from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import messages as messages_repo
+from scribe.drafting.budget import LimitsResolver
 from scribe.i18n import Msg
 from scribe.intake.locks import CHAT_LOCKS, ChatLocks
 from scribe.logging import get_logger
@@ -136,8 +137,10 @@ class ChatEventHandler:
         commitments: CommitmentExtractor | None = None,
         gate: DroppedTurnGate | None = None,
         marker: UnreadMarker | None = None,
+        limits: LimitsResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._limits = limits  # a plugin's work chat limit for pick-up (docs/plugins.md)
         self._gate = gate
         self._marker = marker
         self._clock = clock
@@ -213,6 +216,7 @@ class ChatEventHandler:
                     peer_kind=event.peer_kind,
                     direction="out",
                     now=self._clock(),
+                    limits=self._limits,
                 )
             if chat is None or not chat.enabled:
                 return None  # FR-001: not a work chat, nothing stored

@@ -3,8 +3,10 @@ the scheduler and the health endpoint.
 
 Startup order (fail fast on configuration): settings (an open bot needs SCRIBE_OPEN_BOT=true,
 issue #53) -> logging -> encryption keyring ->
-LLM route table validation -> database -> LLMRouter -> ClientPool -> control bot (logins
-interrupted by the last restart are cleaned up, then polling) -> scheduler -> health server.
+LLM route table validation -> database -> LLMRouter -> ClientPool -> scheduler -> plugins
+(``SCRIBE_PLUGINS``, docs/plugins.md: each module's ``setup(host)``; a failing plugin is a
+configuration error) -> control bot (logins interrupted by the last restart are cleaned up,
+then polling) -> scheduler jobs and loop -> health server.
 SIGTERM/SIGINT stop everything gracefully.
 
 Before any of it, ``run`` takes the single-instance advisory lock (``scribe.instance_lock``,
@@ -47,7 +49,7 @@ from scribe.db.models import UserState
 from scribe.db.repos import llm_spend as llm_spend_repo
 from scribe.db.repos import users as users_repo
 from scribe.db.session import create_engine_from_settings, create_session_factory
-from scribe.drafting.budget import BudgetCaps, BudgetGuard
+from scribe.drafting.budget import BudgetGuard
 from scribe.drafting.composer import Composer
 from scribe.drafting.reply_gate import ReplyGate
 from scribe.i18n import Msg
@@ -61,6 +63,7 @@ from scribe.llm.routes import RouteTableError, load_route_table, validate_route_
 from scribe.logging import configure_logging, get_logger
 from scribe.observability.health import HealthServer, HealthStatus
 from scribe.observability.spend_alert import register_spend_alert_job
+from scribe.plugins import PluginError, PluginHost, load_plugins
 from scribe.release_notes.sender import recover_interrupted, register_release_notes_job
 from scribe.retention.pending_credentials import register_pending_credentials_job
 from scribe.retention.purge import register_purge_job
@@ -166,10 +169,29 @@ class Service:
             system_version=settings.tg_system_version,
             app_version=settings.tg_app_version,
         )
+        self.scheduler = Scheduler(
+            self.session_factory, tick_s=settings.scheduler_tick_s, clock=self._clock
+        )
+        # Plugins (docs/plugins.md) register their hooks before anything below reads them.
+        self.plugin_host = PluginHost(
+            settings,
+            session_factory=self.session_factory,
+            bot=self.bot,
+            scheduler=self.scheduler,
+            clock=self._clock,
+            pool=self.pool,
+        )
+        try:
+            load_plugins(settings, self.plugin_host)
+        except PluginError as exc:
+            raise ConfigError(str(exc)) from exc
+        hooks = self.plugin_host.hooks
+        limits = hooks.limits_resolver(settings)
+        decorate = hooks.notice_decorator()
         # 004: the reply gate skips turns that only close the exchange (no draft, no card) and
         # keeps such a message from leaving a pending draft outdated. It never sends.
         self.reply_gate = ReplyGate(
-            self.session_factory, self.llm_router, settings, clock=self._clock
+            self.session_factory, self.llm_router, settings, clock=self._clock, limits=limits
         )
         # specs/004: one search over earlier conversations (the sender's enabled work chats).
         self.earlier_search = EarlierSearch(self.pool, settings, clock=self._clock)
@@ -180,6 +202,7 @@ class Service:
             clock=self._clock,
             notifier=self._notify_user,
             gate=self.reply_gate,
+            limits=limits,
         )
         self.pool.on_new_message(self.intake.handle_new_message)
         self.telegram_login = LoginManager(
@@ -211,13 +234,11 @@ class Service:
             telegram_login=self.telegram_login,
             unread_marker=self.unread_marker,
             auto_send_advisor=self.auto_send_advisor,
+            **self.plugin_host.dispatcher_options(),
         )
         await self.pool.start_all()
         self._tasks.append(asyncio.create_task(self._run_bot(), name="control-bot"))
 
-        self.scheduler = Scheduler(
-            self.session_factory, tick_s=settings.scheduler_tick_s, clock=self._clock
-        )
         presenter = DraftPresenter(self.bot, self.session_factory, clock=self._clock)
         # US2: manual replies drop open turns, reading elsewhere makes them due now, new
         # messages flag a pending draft as outdated.
@@ -228,6 +249,7 @@ class Service:
             cards=presenter,
             gate=self.reply_gate,  # 004: closing turns a manual reply dropped feed the habit rule
             marker=self.unread_marker,  # specs/009: reads elsewhere / manual replies are "seen"
+            limits=limits,
         )
         self.pool.on_outgoing(self.chat_events.handle_outgoing)
         self.pool.on_read_elsewhere(self.chat_events.handle_read_elsewhere)
@@ -245,6 +267,7 @@ class Service:
                     clock=self._clock,
                     earlier_search=self.earlier_search,
                     commitments=self.commitments,
+                    limits=limits,
                 ),
                 presenter,
                 gate=self.reply_gate,
@@ -252,9 +275,10 @@ class Service:
                 # Issue #74: at the daily hard cap turns are skipped, with one notice a day.
                 budget=BudgetGuard(
                     self.session_factory,
-                    BudgetCaps.from_settings(settings),
+                    limits,
                     notifier=self._notify_user,
                     clock=self._clock,
+                    decorate=decorate,
                 ),
                 clock=self._clock,
                 read_concurrency=settings.read_concurrency,
@@ -283,7 +307,13 @@ class Service:
         )
         # specs/005: losing or regaining access stops or resumes the agent within ~1 minute.
         register_access_reconcile(
-            self.scheduler, self.session_factory, self.pool, self.bot, settings, self._clock
+            self.scheduler,
+            self.session_factory,
+            self.pool,
+            self.bot,
+            settings,
+            self._clock,
+            decorate=decorate,
         )
         # specs/011: after a new version, each user with access gets one "what's new" message.
         release_notes = register_release_notes_job(
@@ -296,7 +326,7 @@ class Service:
         )
         # Issue #74: the operators' daily LLM spend alert (p95 and cap hits of yesterday).
         register_spend_alert_job(
-            self.scheduler, self.session_factory, self.bot, settings, self._clock
+            self.scheduler, self.session_factory, self.bot, settings, self._clock, limits=limits
         )
         # US4: weekly profile refresh with a "what changed" note and undo (FR-037).
         register_profile_jobs(
@@ -307,6 +337,7 @@ class Service:
             settings,
             self._clock,
             gateway=self.pool,  # refreshes read the history from Telegram, like a Rebuild
+            limits=limits,
         )
         # specs/003: the Jira source with the operator's settings, and its comment sync jobs.
         install_default_task_sources(

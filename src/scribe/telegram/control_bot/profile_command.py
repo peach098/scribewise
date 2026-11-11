@@ -56,6 +56,7 @@ from aiogram.types import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from scribe.access.apply import OfferProvider
 from scribe.chats import work_account
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
@@ -70,7 +71,7 @@ from scribe.db.models import (
 from scribe.db.repos import chats as chats_repo
 from scribe.db.repos import profiles as profiles_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import paused_alert, paused_now
+from scribe.drafting.budget import LimitsResolver, paused_alert, paused_now
 from scribe.i18n import Lang, Msg, t
 from scribe.llm.registry import LLMRouter
 from scribe.logging import get_logger
@@ -94,6 +95,7 @@ from scribe.style.profiles import (
     undo_refresh,
     with_rule_removed,
 )
+from scribe.telegram.control_bot.limits import send_refusal, usage_of
 from scribe.telegram.control_bot.render import (
     TELEGRAM_TEXT_MAX,
     InvalidCallbackData,
@@ -689,6 +691,8 @@ async def rebuild_callback(
     gateway: MessagingGateway,
     lang: Lang,
     clock: Clock = utcnow,
+    limits: LimitsResolver | None = None,
+    offer_provider: OfferProvider | None = None,
 ) -> None:
     if user is None:
         await callback.answer(t("common.not_set_up", lang))
@@ -699,8 +703,15 @@ async def rebuild_callback(
         await callback.answer()
         return
     now = clock()
-    if await paused_now(session_factory, settings, user.id, now):  # issue #74
+    if await paused_now(session_factory, settings, user.id, now, limits):  # issue #74
         await callback.answer(paused_alert(user.timezone, now).render(lang), show_alert=True)
+        return
+    usage = await usage_of(session_factory, user, limits, settings, clock)
+    if not usage.profile_refresh_allowed:  # a plugin's usage limit (docs/plugins.md)
+        await callback.answer()
+        log.info("profile_rebuild_unavailable", user_id=str(user.id))
+        text = t("profile.rebuild_unavailable", lang)
+        await send_refusal(bot, user, text, offer_provider, session_factory)
         return
     if step != "1":
         await callback.answer()

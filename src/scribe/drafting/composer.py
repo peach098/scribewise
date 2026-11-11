@@ -133,7 +133,13 @@ from scribe.db.repos import drafts as drafts_repo
 from scribe.db.repos import tasks_conn as tasks_conn_repo
 from scribe.db.repos import turns as turns_repo
 from scribe.db.repos import users as users_repo
-from scribe.drafting.budget import BudgetCaps, DraftingPaused, budget_level, drafting_tier
+from scribe.drafting.budget import (
+    DraftingPaused,
+    LimitsResolver,
+    default_resolver,
+    drafting_tier,
+    user_budget_level,
+)
 from scribe.drafting.flags import detect_sensitive, merge_sensitive
 from scribe.drafting.injection import ACTION_CLAIM, SUSPECTED_INJECTION, injection_warnings
 from scribe.drafting.promises import detect_promise, merge_commitment
@@ -834,8 +840,10 @@ class Composer:
         commitments: commitments_ctx.CommitmentExtractor | None = None,
         earlier_search: EarlierSearch | None = None,
         deadline_memo: deadlines_ctx.DeadlineMemo | None = None,
+        limits: LimitsResolver | None = None,
     ) -> None:
         self._session_factory = session_factory
+        self._limits = default_resolver(limits, settings)  # the user's daily caps (#74)
         # Issue #73: process-wide, so the Composer each 🔁 Regenerate builds shares it.
         self.deadline_memo = deadline_memo or deadlines_ctx.default_memo()
         # specs/004: None (tests, old callers) drafts without searching earlier conversations.
@@ -902,9 +910,7 @@ class Composer:
             if user is None or turn is None:
                 raise ComposeError("turn not found")
             # Issue #74: no draft at the daily hard cap; the economy tier from the soft cap on.
-            level = await budget_level(
-                session, user_id, BudgetCaps.from_settings(self._settings), now
-            )
+            level = await user_budget_level(session, user_id, self._limits, now)
             if level == "hard":
                 raise DraftingPaused("daily LLM hard cap reached")
             tier = drafting_tier(user.llm_tier.value, level)

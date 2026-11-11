@@ -25,6 +25,11 @@ minus the chats the user excludes.
 - **Repair** (R8): :func:`reconcile_user` re-applies the invariant; it runs after every switch
   and at worker start for users who switched within the last day.
 
+Usage limits (docs/plugins.md): with a ``limits`` resolver whose ``max_work_chats`` is set,
+pick-up and :func:`materialise_imported` add no chat once that many chats are enabled (the
+control bot refuses to turn the mode on under such a limit; a plugin that sets one for a user
+with the mode on turns it off with :func:`switch`).
+
 History: a picked-up chat is recorded with 007's ``chats_added`` kind (meta
 ``{"work_chat_ids": [id], "origin": "auto"}``); exclusions and mode switches have their own
 kinds. Logs carry ids and counts only, never titles or message text.
@@ -55,6 +60,7 @@ from scribe.db.models import (
 )
 from scribe.db.repos import activity as activity_repo
 from scribe.db.repos import chats as chats_repo
+from scribe.drafting.budget import LimitsResolver, SettingsLimitsResolver, user_limits
 from scribe.logging import get_logger
 from scribe.style.importer import ImportResult, ImportTarget
 from scribe.telegram.gateway import Dialog, DialogKind, MessagingGateway, PeerKind
@@ -106,6 +112,19 @@ async def _record_added(
 # --- pick-up --------------------------------------------------------------------------------------
 
 
+async def _chat_room(
+    session: AsyncSession, user_id: uuid.UUID, limits: LimitsResolver | None, now: datetime
+) -> int | None:
+    """How many more chats may be enabled under the user's ``max_work_chats`` (None: no
+    limit)."""
+    if limits is None or isinstance(limits, SettingsLimitsResolver):
+        return None
+    usage = await user_limits(session, user_id, limits, now)
+    if usage.max_work_chats is None:
+        return None
+    return max(usage.max_work_chats - await chats_repo.count_enabled(session, user_id), 0)
+
+
 async def pick_up(
     session: AsyncSession,
     user_id: uuid.UUID,
@@ -116,6 +135,7 @@ async def pick_up(
     peer_kind: PeerKind | None,
     direction: Literal["in", "out"],
     now: datetime,
+    limits: LimitsResolver | None = None,
 ) -> WorkChat | None:
     """Called by intake / outgoing handling when the chat has no ``work_chats`` row. Returns a
     new enabled ``auto`` row (and records ``chats_added``) iff the chat is eligible and the
@@ -126,6 +146,9 @@ async def pick_up(
             log.debug("work_account_ineligible", user_id=str(user_id), peer_kind=peer_kind)
         return None
     if not await _mode(session, user_id, lock="share"):
+        return None
+    if await _chat_room(session, user_id, limits, now) == 0:
+        log.info("work_account_pick_up_limited", user_id=str(user_id))
         return None
     chat, created = await chats_repo.create_auto_chat(
         session,
@@ -748,10 +771,12 @@ async def materialise_imported(
     targets: Sequence[ImportTarget],
     *,
     now: datetime,
+    limits: LimitsResolver | None = None,
 ) -> int:
     """Create enabled ``auto`` rows (``chats_added``) for the imported dialogs without a row in
     which the user wrote at least one message, so their contacts rank for profiles. Nothing is
-    created if the mode was turned off meanwhile. The caller commits; returns the rows created."""
+    created if the mode was turned off meanwhile, nor beyond the user's chat limit. The caller
+    commits; returns the rows created."""
     wanted = [
         target
         for target in targets
@@ -759,6 +784,9 @@ async def materialise_imported(
     ]
     if not wanted or not await _mode(session, user_id, lock="share"):
         return 0
+    room = await _chat_room(session, user_id, limits, now)
+    if room is not None:
+        wanted = wanted[:room]
     created_count = 0
     for target in wanted:
         chat, created = await chats_repo.create_auto_chat(

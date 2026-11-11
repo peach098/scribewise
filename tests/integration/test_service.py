@@ -4,6 +4,8 @@ session, answers /healthz, ticks the scheduler, registers the purge job and shut
 from __future__ import annotations
 
 import asyncio
+import sys
+import types
 from pathlib import Path
 
 import aiohttp
@@ -152,3 +154,67 @@ async def test_gate_without_operator_logs_a_warning(
     await service.start()
     await service.stop()
     assert len(log_capture.events("access_gate_no_operator")) == 1  # not logged again
+
+
+# --- plugins (docs/plugins.md) ----------------------------------------------------------------
+
+
+async def test_a_failing_plugin_stops_startup(
+    settings: Settings,
+    migrated_database_url: str,
+    committed_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def setup(host: object) -> None:
+        raise RuntimeError("synthetic plugin failure")
+
+    module = types.ModuleType("scribe_test_failing_plugin")
+    module.setup = setup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    configured = _settings(settings, migrated_database_url).model_copy(
+        update={"plugins": [module.__name__]}
+    )
+    bot, _ = offline_bot()
+    service = Service(configured, environ=ENVIRON, bot_factory=lambda s: bot)
+    try:
+        with pytest.raises(ConfigError, match="setup failed: RuntimeError"):
+            await service.start()
+    finally:
+        await service.stop()
+    assert not service.bot_polling
+
+
+async def test_a_plugin_is_set_up_once_before_the_dispatcher(
+    settings: Settings,
+    migrated_database_url: str,
+    committed_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aiogram import Router
+
+    from scribe.plugins import PluginHost
+
+    hosts: list[PluginHost] = []
+    router = Router(name="plugin-service-test")
+
+    def setup(host: PluginHost) -> None:
+        assert host.bot is not None and host.scheduler is not None and host.pool is not None
+        assert host.session_factory is not None
+        assert not hasattr(service, "dispatcher")  # the dispatcher is built afterwards
+        host.add_router(router)
+        hosts.append(host)
+
+    module = types.ModuleType("scribe_test_plugin")
+    module.setup = setup  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    configured = _settings(settings, migrated_database_url).model_copy(
+        update={"plugins": [module.__name__]}
+    )
+    bot, _ = offline_bot()
+    service = Service(configured, environ=ENVIRON, bot_factory=lambda s: bot)
+    await service.start()
+    try:
+        assert len(hosts) == 1
+        assert router in service.dispatcher.sub_routers
+    finally:
+        await service.stop()

@@ -54,6 +54,7 @@ from scribe.db.models import (
     UserState,
 )
 from scribe.db.repos import users as users_repo
+from scribe.drafting.budget import LimitsResolver, SettingsLimitsResolver, user_limits
 from scribe.i18n import t
 from scribe.llm.registry import LLMRouter
 from scribe.logging import get_logger
@@ -116,12 +117,15 @@ async def refresh_all_users(
     clock: Clock = utcnow,
     concurrency: int = REFRESH_CONCURRENCY,
     gateway: MessagingGateway | None = None,
+    limits: LimitsResolver | None = None,
 ) -> int:
     """The weekly job: every user past setup with the automatic refresh on, not refreshed or
     (re)built within the interval, whose refresh of this week did not complete yet (so a run
     interrupted by a restart resumes); one user's failure never stops the others. With a
     ``gateway`` that tells which clients run (the client pool), users without a running client
-    are skipped (their history cannot be read)."""
+    are skipped (their history cannot be read). With a plugin's ``limits`` (docs/plugins.md) a
+    user without ``profile_refresh_allowed`` is skipped and the plugin's
+    ``profile_refresh_default`` replaces the deployment default."""
     now = clock()
     run_start = _run_start(now)
     # One day less than the interval, so "every 14 days" lands on every other Sunday run.
@@ -152,16 +156,32 @@ async def refresh_all_users(
                 )
             )
         )
-        result = await session.execute(
-            select(User.id).where(
-                User.state.in_(REFRESHED_STATES),
-                User.access_suspended_at.is_(None),  # access ended (specs/005)
-                func.coalesce(User.profile_auto_refresh, settings.profile_auto_refresh_default),
-                User.id.not_in(done),
-                User.id.not_in(refreshed_recently),
-            )
+        candidates = select(User).where(
+            User.state.in_(REFRESHED_STATES),
+            User.access_suspended_at.is_(None),  # access ended (specs/005)
+            User.id.not_in(done),
+            User.id.not_in(refreshed_recently),
         )
-        user_ids = list(result.scalars().all())
+        if limits is None or isinstance(limits, SettingsLimitsResolver):
+            default = (
+                limits.limits.profile_refresh_default
+                if limits is not None
+                else settings.profile_auto_refresh_default
+            )
+            switched_on = func.coalesce(User.profile_auto_refresh, default)
+            result = await session.execute(candidates.with_only_columns(User.id).where(switched_on))
+            user_ids = list(result.scalars().all())
+        else:
+            user_ids = []
+            for user in (await session.scalars(candidates)).all():
+                usage = await user_limits(session, user, limits, now)
+                wanted = (
+                    user.profile_auto_refresh
+                    if user.profile_auto_refresh is not None
+                    else usage.profile_refresh_default
+                )
+                if usage.profile_refresh_allowed and wanted:
+                    user_ids.append(user.id)
     is_running = getattr(gateway, "is_running", None)
     if is_running is not None:
         offline = [user_id for user_id in user_ids if not is_running(user_id)]
@@ -220,10 +240,17 @@ def register_profile_jobs(
     settings: Settings,
     clock: Clock = utcnow,
     gateway: MessagingGateway | None = None,
+    limits: LimitsResolver | None = None,
 ) -> None:
     async def job() -> None:
         await refresh_all_users(
-            session_factory, llm_router, bot, settings=settings, clock=clock, gateway=gateway
+            session_factory,
+            llm_router,
+            bot,
+            settings=settings,
+            clock=clock,
+            gateway=gateway,
+            limits=limits,
         )
 
     async def reencrypt() -> None:

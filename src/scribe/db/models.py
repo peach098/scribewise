@@ -306,6 +306,8 @@ class AccessEventKind(enum.StrEnum):
     application_submitted = "application_submitted"
     application_approved = "application_approved"
     application_rejected = "application_rejected"
+    # Migration 0023: a plugin's own event, its name in ``meta_json["event"]`` (docs/plugins.md)
+    plugin = "plugin"
 
 
 class BetaApplicationStatus(enum.StrEnum):
