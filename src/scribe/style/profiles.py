@@ -18,10 +18,14 @@
 - Every build writes a new version: the old current row becomes ``previous`` (the undo target)
   and an older ``previous`` is retired. ``user_rules_json`` (rules the user set or accepted) is
   copied forward unchanged, never rebuilt by the model.
-- :func:`refresh_profiles` is the weekly refresh (job ``refresh_profiles``, registered in
-  ``scribe/jobs.py``): new versions from the user's own messages of the last 30 days (including
-  replies sent through the agent), one batch when the adapter can batch, a "what changed" note,
-  and :func:`undo_refresh` restores the previous versions of every profile in that refresh.
+- :func:`refresh_profiles` is the automatic refresh (job ``refresh_profiles``, registered in
+  ``scribe/jobs.py``): a profile gets a new version when at least
+  ``profile_refresh_min_new_messages`` own messages (including replies sent through the agent)
+  were written for it since it was built. With the Telegram gateway it is built, like a
+  Rebuild, from the own messages of the last ``style_import_months`` read from Telegram;
+  without one (the jobs CLI) from the 30 days kept in the database. One batch when the adapter
+  can batch, a "what changed" note, and :func:`undo_refresh` restores the previous versions of
+  every profile in that refresh.
   Every run writes a ``profile_refreshed`` record, also when nothing changed
   (``meta_json.noop``): it is the mark after which own messages are counted next time.
 - Writes to one user's profiles are serialized: every write transaction takes
@@ -94,8 +98,9 @@ from scribe.llm.provider import (
 )
 from scribe.llm.registry import LLMRouter, RoutedResult
 from scribe.logging import get_logger
-from scribe.style.importer import ImportResult
+from scribe.style.importer import ImportResult, import_own_messages
 from scribe.style.rule_catalog import rule_label
+from scribe.telegram.gateway import MessagingGateway
 
 log = get_logger("scribe.style")
 
@@ -106,8 +111,8 @@ SHORT_SAMPLE_WORDS = 3
 SHORT_SAMPLES_SHARE = 0.15
 # A contact needs this many of the user's own messages for a profile of its own (else global).
 MIN_CONTACT_SAMPLES = 10
-# A refresh rebuilds a profile only from at least this many new own messages.
-MIN_REFRESH_SAMPLES = 10
+# The database window a refresh counts new own messages in (and builds from without a gateway).
+# How many new messages a profile needs is ``Settings.profile_refresh_min_new_messages``.
 REFRESH_WINDOW = timedelta(days=30)
 MAX_USER_RULES = 30
 MAX_RULE_CHARS = 200
@@ -861,7 +866,7 @@ async def build_profiles_from_import(
     )
 
 
-# --- weekly refresh (FR-037) --------------------------------------------------------------------
+# --- automatic refresh (FR-037) -----------------------------------------------------------------
 
 
 @dataclass
@@ -1036,14 +1041,20 @@ async def refresh_profiles(
     *,
     settings: Settings,
     clock: Clock = utcnow,
+    gateway: MessagingGateway | None = None,
 ) -> RefreshResult:
-    """Weekly refresh of the global and per-contact profiles (FR-037).
+    """Automatic refresh of the global and per-contact profiles (FR-037).
 
-    Samples are the user's own messages of the last 30 days. Contact ranking adds the messages
-    written since the last refresh run (or rebuild; for a removed contact, since the removal);
-    the slots are re-assigned (a newcomer that now ranks higher gets a profile, the least active
-    unpinned contact is retired). Each profile with at least ``MIN_REFRESH_SAMPLES`` new
-    messages gets a new version; user rules are copied unchanged.
+    New own messages are counted in the database (the last 30 days). Contact ranking adds the
+    messages written since the last refresh run (or rebuild; for a removed contact, since the
+    removal); the slots are re-assigned (a newcomer that now ranks higher gets a profile, the
+    least active unpinned contact is retired). Each profile with at least
+    ``settings.profile_refresh_min_new_messages`` own messages written since it was built (for a
+    contact without a profile: in the window) gets a new version; user rules are copied
+    unchanged. With a ``gateway`` the new versions are built from the own messages of the last
+    ``style_import_months`` read from Telegram, as a Rebuild does (only when some profile is due,
+    after the run is recorded); without one, or for a profile the import found nothing for, from
+    the database window.
 
     One ``profile_refreshed`` activity record per run, written with the counts in the same
     transaction (so a run is never counted twice), lists the replaced, new and retired rows (ids
@@ -1053,6 +1064,7 @@ async def refresh_profiles(
     """
     now = clock()
     window_start = now - REFRESH_WINDOW
+    threshold = settings.profile_refresh_min_new_messages
     async with session_factory() as session:
         await profiles_repo.lock_profiles(session, user_id)
         last = await _last_refresh_at(session, user_id)
@@ -1068,6 +1080,14 @@ async def refresh_profiles(
         contacts: dict[uuid.UUID, Contact] = {}
         new_counts: dict[uuid.UUID, int] = defaultdict(int)
         all_samples: list[StyleSample] = []
+        built_at: dict[uuid.UUID, datetime] = {
+            p.contact_id: p.created_at
+            for p in await profiles_repo.list_current_contact_profiles(session, user_id)
+            if p.contact_id is not None
+        }
+        # Own messages written since each profile was built: what decides whether it is due.
+        due_counts: dict[uuid.UUID, int] = defaultdict(int)
+        global_due = 0
         for chat, message in rows:
             contact = await _contact_for_chat(session, user_id, chat)
             contacts[contact.id] = contact
@@ -1084,6 +1104,12 @@ async def refresh_profiles(
             floor = max(since_last, removed_at) if removed_at is not None else since_last
             if message.sent_at > floor:
                 new_counts[contact.id] += 1
+            built = built_at.get(contact.id)
+            marks_due = [m for m in (built, removed_at) if m is not None]
+            if not marks_due or message.sent_at > max(marks_due):
+                due_counts[contact.id] += 1
+            if global_current is None or message.sent_at > global_current.created_at:
+                global_due += 1
         for contact_id, count in new_counts.items():
             contacts[contact_id].own_message_count_6m += count
         await session.flush()
@@ -1098,14 +1124,17 @@ async def refresh_profiles(
         jobs = [
             _BuildJob(c.id, by_contact[c.id], await _lineage_rules(session, user_id, c.id))
             for c in slots.kept
-            if len(by_contact.get(c.id, [])) >= MIN_REFRESH_SAMPLES
+            if due_counts.get(c.id, 0) >= threshold
         ]
-        if global_current is not None and len(all_samples) >= MIN_REFRESH_SAMPLES:
-            # A refresh never makes a profile weak: the old one was learned from more history.
-            weak = is_weak(global_current) and len(all_samples) < settings.min_style_samples
-            jobs.insert(
-                0, _BuildJob(None, all_samples, dict(global_current.user_rules_json), weak=weak)
-            )
+        if global_current is not None and global_due >= threshold:
+            jobs.insert(0, _BuildJob(None, all_samples, dict(global_current.user_rules_json)))
+        # Telegram chat id -> contact, for the samples of the import (enabled work chats).
+        chat_contacts: dict[int, uuid.UUID] = {}
+        if jobs and gateway is not None:
+            for chat in await chats_repo.list_work_chats(session, user_id, enabled_only=True):
+                chat_contacts[chat.telegram_chat_id] = (
+                    await _contact_for_chat(session, user_id, chat)
+                ).id
         kept_contacts = {c.id: c for c in slots.kept}
         retired_ids = [str(i) for i in slots.retired_profile_ids]
         meta: dict[str, Any] = {
@@ -1121,7 +1150,29 @@ async def refresh_profiles(
             session, user_id, ActivityKind.profile_refreshed, at=now, meta=meta
         )
         batch_id = record.id
+        global_weak_before = is_weak(global_current)
         await session.commit()
+
+    if jobs and gateway is not None:
+        # A failure here leaves the run ``pending``: the next job run resumes it.
+        imported = await import_own_messages(
+            gateway, session_factory, user_id, settings=settings, clock=clock
+        )
+        by_contact_imported: dict[uuid.UUID, list[StyleSample]] = defaultdict(list)
+        for chat_id, chat_samples in imported.by_chat.items():
+            owner = chat_contacts.get(chat_id)
+            if owner is not None:
+                by_contact_imported[owner].extend(chat_samples)
+        for job in jobs:
+            fresh = (
+                imported.samples if job.contact_id is None else by_contact_imported[job.contact_id]
+            )
+            if fresh:
+                job.samples = fresh
+    for job in jobs:
+        if job.contact_id is None:
+            # A refresh never makes a profile weak: the old one was learned from more history.
+            job.weak = global_weak_before and len(job.samples) < settings.min_style_samples
 
     replaced: list[tuple[uuid.UUID, uuid.UUID | None]] = []
     changes: list[Msg] = []

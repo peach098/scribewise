@@ -8,7 +8,7 @@ Send these in your bot chat. The same list is in the bot's menu and in `/help`.
 | --- | --- |
 | `/start` | Set up: connect Telegram (QR code or phone), pick work chats or turn on work account mode, set your time zone, learn your style |
 | `/chats` | Your work chats: **➕ Add work chats**, turn a chat on or off, per-chat language and reading delay, per-chat **⏱ auto-send** (on after a confirmation, off in one tap, with the share of drafts sent unchanged), exclusions in work account mode |
-| `/settings` | Reading delay, working hours and days, time zone, bot language; switches for search over earlier conversations, unread marks, work account mode and the grammatical gender in drafts; auto-send: the **⏱ Cancel window** (1, 2, 5, 10 or 15 minutes), the **chats with auto-send** and **⏹ Turn off auto-send everywhere** |
+| `/settings` | Reading delay, working hours and days, time zone, bot language; switches for search over earlier conversations, unread marks, work account mode, the automatic style profile refresh and the grammatical gender in drafts; auto-send: the **⏱ Cancel window** (1, 2, 5, 10 or 15 minutes), the **chats with auto-send** and **⏹ Turn off auto-send everywhere** |
 | `/profile` | Your style profile and its rules: edit rules, per-contact profiles (up to 20), pin, rebuild, undo the last weekly refresh |
 | `/commitments` | Promises found in your chats and Jira comments: resolve, delete, reopen |
 | `/waiting` | Messages still waiting to be read, with **👀 Read now** |

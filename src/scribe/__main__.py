@@ -300,7 +300,13 @@ class Service:
         )
         # US4: weekly profile refresh with a "what changed" note and undo (FR-037).
         register_profile_jobs(
-            self.scheduler, self.session_factory, self.llm_router, self.bot, settings, self._clock
+            self.scheduler,
+            self.session_factory,
+            self.llm_router,
+            self.bot,
+            settings,
+            self._clock,
+            gateway=self.pool,  # refreshes read the history from Telegram, like a Rebuild
         )
         # specs/003: the Jira source with the operator's settings, and its comment sync jobs.
         install_default_task_sources(

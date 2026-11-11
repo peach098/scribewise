@@ -408,6 +408,9 @@ class User(_Timestamps, Base):
     mark_unread: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=SERVER_TRUE
     )
+    # Automatic profile refresh switch in /settings; NULL: the user has not chosen, the
+    # deployment default applies (``Settings.profile_auto_refresh_default``).
+    profile_auto_refresh: Mapped[bool | None] = mapped_column(Boolean)
     # Issue #46: the form drafts use for the user in languages with grammatical gender
     # ("masculine" / "feminine"; NULL: not set, the model follows the examples). Personal data:
     # never logged, exported with the user row, deleted with it.

@@ -1481,6 +1481,11 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "settings.mark_unread_state.off": "выкл",
     "btn.mark_unread_on": "🔵 Отмечать непрочитанными",
     "btn.mark_unread_off": "🔵 Не отмечать непрочитанными",
+    "settings.profile_refresh": "🔄 Автообновление профиля стиля: {state}",
+    "settings.profile_refresh_state.on": "вкл",
+    "settings.profile_refresh_state.off": "выкл",
+    "btn.profile_refresh_on": "🔄 Включить автообновление профиля",
+    "btn.profile_refresh_off": "🔄 Выключить автообновление профиля",
     # specs/011: что нового после обновления
     "release_notes.heading": "Что нового в Scribe {version}",
     "my_data.release_notes": "📣 Получено обновлений: {n}",

@@ -134,6 +134,13 @@ class Settings(BaseSettings):
     # Style profile builds (issue #30): own messages sent to the model per profile (lower it for
     # a smaller model), and how much of the global profile's sample group chats may take.
     profile_max_samples: int = Field(default=400, ge=1)
+    # Automatic profile refresh (job ``refresh_profiles``, Sundays): a user is refreshed at most
+    # once per interval, a profile only from this many own messages written since it was built,
+    # and only while the user's /settings switch is on (``users.profile_auto_refresh``; NULL
+    # follows the default below).
+    profile_refresh_interval_days: int = Field(default=7, ge=1)
+    profile_refresh_min_new_messages: int = Field(default=10, ge=1)
+    profile_auto_refresh_default: bool = True
     profile_group_samples_per_chat: int = Field(default=40, ge=0)
     profile_group_samples_share: float = Field(default=0.3, ge=0, le=1)
     # Work account mode (specs/008 FR-016): the most recent private chats the style import reads

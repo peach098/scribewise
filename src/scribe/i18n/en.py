@@ -1356,6 +1356,11 @@ CATALOG: Mapping[str, str | Mapping[str, str]] = {
     "settings.mark_unread_state.off": "off",
     "btn.mark_unread_on": "🔵 Unread marks: turn on",
     "btn.mark_unread_off": "🔵 Unread marks: turn off",
+    "settings.profile_refresh": "🔄 Automatic style profile refresh: {state}",
+    "settings.profile_refresh_state.on": "on",
+    "settings.profile_refresh_state.off": "off",
+    "btn.profile_refresh_on": "🔄 Profile refresh: turn on",
+    "btn.profile_refresh_off": "🔄 Profile refresh: turn off",
     # specs/011: release notes after an update
     "release_notes.heading": "What's new in Scribe {version}",
     "my_data.release_notes": "📣 Release notes received: {n}",

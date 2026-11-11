@@ -1,10 +1,15 @@
 """Profile jobs (FR-037): the weekly ``refresh_profiles`` scheduled job and its manual CLI.
 
 - :func:`register_profile_jobs` registers ``refresh_profiles`` (weekly, Sunday 02:00 UTC) in the
-  ``scheduled_jobs`` mechanism (``Scheduler.register_job``). Each run refreshes every set-up user
-  (``style.profiles.refresh_profiles``) and posts the "🔄 Profiles refreshed … Changes: …" note
-  with ↩️ Undo (``undo_refresh:<batch_id>``) in the user's control chat. A user whose run of this
-  week completed (a ``profile_refreshed`` record since the scheduled time, not ``pending``) is
+  ``scheduled_jobs`` mechanism (``Scheduler.register_job``). Each run refreshes the set-up users
+  whose automatic refresh is on (``users.profile_auto_refresh``, NULL: the
+  ``profile_auto_refresh_default`` setting) and who were not refreshed or (re)built within the
+  last ``profile_refresh_interval_days`` (less one day, so an interval of 14 is every other
+  Sunday) (``style.profiles.refresh_profiles``), and posts the "🔄 Profiles refreshed …
+  Changes: …" note with ↩️ Undo (``undo_refresh:<batch_id>``) in the user's control chat. With
+  the Telegram client pool, the profiles are built from the history read from Telegram, so a
+  user whose client is not running is skipped until the next run. A user whose run of this week
+  completed (a ``profile_refreshed`` record since the scheduled time, not ``pending``) is
   skipped, so a run interrupted by a restart (requeued at startup by ``Scheduler.ensure_jobs``)
   resumes with the users not refreshed yet.
 - It also registers ``reencrypt_profiles`` (``retention/reencrypt.py``): due at once the first
@@ -15,7 +20,8 @@
   04:30 UTC, it rewrites every encrypted value still under a previous key or in the legacy
   format (finds nothing when there is none), so a key rotation completes by itself within a day.
 - ``python -m scribe.jobs refresh_profiles --user <user id>`` runs the refresh for one user now
-  (quickstart US4 step 6), ``python -m scribe.jobs reencrypt_profiles`` the re-encryption of
+  (quickstart US4 step 6; outside the service, so from the messages in the database, whatever
+  the interval and the switch), ``python -m scribe.jobs reencrypt_profiles`` the re-encryption of
   legacy plaintext rows, and ``python -m scribe.jobs reencrypt_all [--check]`` the full
   re-encryption (``--check``: count only; exit status 1 while anything is pending or failed),
   with the service's configuration (``SCRIBE_*`` environment).
@@ -33,13 +39,20 @@ from dataclasses import asdict
 from datetime import datetime, time, timedelta
 
 from aiogram import Bot
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.clock import Clock, utcnow
 from scribe.config import Settings
 from scribe.crypto import get_keyring
-from scribe.db.models import ActivityKind, ActivityRecord, User, UserState
+from scribe.db.models import (
+    ActivityKind,
+    ActivityRecord,
+    ProfileScope,
+    StyleProfile,
+    User,
+    UserState,
+)
 from scribe.db.repos import users as users_repo
 from scribe.i18n import t
 from scribe.llm.registry import LLMRouter
@@ -50,6 +63,7 @@ from scribe.retention.reencrypt_all import reencrypt_all
 from scribe.scheduling.scheduler import Daily, Scheduler, Weekly, previous_run
 from scribe.style.profiles import RefreshResult, refresh_note, refresh_profiles
 from scribe.telegram.control_bot.render import button, format_callback, keyboard
+from scribe.telegram.gateway import MessagingGateway
 
 log = get_logger("scribe.jobs")
 
@@ -71,10 +85,11 @@ async def refresh_user(
     *,
     settings: Settings,
     clock: Clock = utcnow,
+    gateway: MessagingGateway | None = None,
 ) -> RefreshResult:
     """Refresh one user's profiles and post the note (when something changed and a bot is set)."""
     result = await refresh_profiles(
-        session_factory, llm_router, user_id, settings=settings, clock=clock
+        session_factory, llm_router, user_id, settings=settings, clock=clock, gateway=gateway
     )
     if result.batch_id is None or bot is None:
         return result
@@ -100,10 +115,17 @@ async def refresh_all_users(
     settings: Settings,
     clock: Clock = utcnow,
     concurrency: int = REFRESH_CONCURRENCY,
+    gateway: MessagingGateway | None = None,
 ) -> int:
-    """The weekly job: every user past setup whose refresh of this week did not complete yet
-    (so a run interrupted by a restart resumes); one user's failure never stops the others."""
-    run_start = _run_start(clock())
+    """The weekly job: every user past setup with the automatic refresh on, not refreshed or
+    (re)built within the interval, whose refresh of this week did not complete yet (so a run
+    interrupted by a restart resumes); one user's failure never stops the others. With a
+    ``gateway`` that tells which clients run (the client pool), users without a running client
+    are skipped (their history cannot be read)."""
+    now = clock()
+    run_start = _run_start(now)
+    # One day less than the interval, so "every 14 days" lands on every other Sunday run.
+    recent = now - timedelta(days=settings.profile_refresh_interval_days - 1)
     async with session_factory() as session:
         done = (
             select(ActivityRecord.user_id)
@@ -114,14 +136,38 @@ async def refresh_all_users(
             )
             .distinct()
         )
+        # Refreshed (a run that changed something) or (re)built within the interval.
+        refreshed_recently = (
+            select(ActivityRecord.user_id)
+            .where(
+                ActivityRecord.kind == ActivityKind.profile_refreshed,
+                ActivityRecord.at > recent,
+                ~ActivityRecord.meta_json.contains({"noop": True}),
+            )
+            .union(
+                select(StyleProfile.user_id).where(
+                    StyleProfile.scope == ProfileScope.global_,
+                    StyleProfile.is_current.is_(True),
+                    StyleProfile.created_at > recent,
+                )
+            )
+        )
         result = await session.execute(
             select(User.id).where(
                 User.state.in_(REFRESHED_STATES),
                 User.access_suspended_at.is_(None),  # access ended (specs/005)
+                func.coalesce(User.profile_auto_refresh, settings.profile_auto_refresh_default),
                 User.id.not_in(done),
+                User.id.not_in(refreshed_recently),
             )
         )
         user_ids = list(result.scalars().all())
+    is_running = getattr(gateway, "is_running", None)
+    if is_running is not None:
+        offline = [user_id for user_id in user_ids if not is_running(user_id)]
+        if offline:
+            log.info("profile_refresh_skipped_offline", users=len(offline))
+        user_ids = [user_id for user_id in user_ids if user_id not in offline]
     semaphore = asyncio.Semaphore(concurrency)
     refreshed = 0
 
@@ -130,7 +176,13 @@ async def refresh_all_users(
         async with semaphore:
             try:
                 outcome = await refresh_user(
-                    session_factory, llm_router, bot, user_id, settings=settings, clock=clock
+                    session_factory,
+                    llm_router,
+                    bot,
+                    user_id,
+                    settings=settings,
+                    clock=clock,
+                    gateway=gateway,
                 )
             except Exception as exc:
                 if not await _user_exists(session_factory, user_id):  # deleted meanwhile
@@ -167,9 +219,12 @@ def register_profile_jobs(
     bot: Bot,
     settings: Settings,
     clock: Clock = utcnow,
+    gateway: MessagingGateway | None = None,
 ) -> None:
     async def job() -> None:
-        await refresh_all_users(session_factory, llm_router, bot, settings=settings, clock=clock)
+        await refresh_all_users(
+            session_factory, llm_router, bot, settings=settings, clock=clock, gateway=gateway
+        )
 
     async def reencrypt() -> None:
         if get_keyring().strict:  # plaintext is refused then, never adopted
