@@ -905,7 +905,8 @@ async def test_weekly_refresh_resumes_after_restart(
         user = await make_user(state=UserState.active, display_name=name)
         contact = await make_contact(user, display_name=f"{name} contact")
         chat = await make_chat(user, telegram_chat_id=contact.telegram_peer_id, title=name)
-        await add_profile(session_factory, user)
+        # Built before the refresh interval, so both are due; the messages came after it.
+        await add_profile(session_factory, user, at=clock() - timedelta(days=10))
         await add_own_messages(session_factory, user, chat, 12, at=clock() - timedelta(days=1))
         users.append(user)
     fake_llm.set_response("profile.build", style_output())
@@ -930,7 +931,8 @@ async def test_weekly_refresh_resumes_after_restart(
             ).all()
         )
     assert counts == {users[0].id: 1, users[1].id: 1}
-    assert len(fake_llm.calls_for("profile.build")) == builds_before + 1  # only the second user
+    # Only the second user: its global profile and its contact's.
+    assert len(fake_llm.calls_for("profile.build")) == builds_before + 2
 
 
 async def test_interrupted_weekly_job_is_requeued_at_startup(

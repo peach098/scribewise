@@ -82,7 +82,7 @@ a model priced at 0 never count. The soft cap must not be above the hard cap.
   everything works again; skipped messages can be drafted from `/skipped`.
 - **Not paused at the hard cap:** extracting promises from the user's own sent messages and
   Jira comments (cheap, limited by what the user writes, and never retried, so a skipped
-  extraction would lose a promise), the weekly profile refresh (it runs on Sunday at 02:00 UTC,
+  extraction would lose a promise), the automatic profile refresh (it runs on Sunday at 02:00 UTC,
   at the start of a new budget day) and the first profile build during setup.
 - The check runs before each message, with one indexed query. A draft already being written
   finishes, so a day can end a little above the hard cap.
@@ -118,6 +118,15 @@ message says it was skipped. Nothing is sent when no user is in any list.
 | `SCRIBE_PROFILE_GROUP_SAMPLES_SHARE` | 0.3 | Maximum share of group chats in that sample |
 | `SCRIBE_PROFILE_EXAMPLES_CONTACT` / `SCRIBE_PROFILE_EXAMPLES_GLOBAL` | 20 / 50 | Example messages kept in a contact / the global profile |
 | `SCRIBE_WORK_ACCOUNT_IMPORT_MAX_CHATS` | 50 | Recent private chats the style import reads in work account mode |
+| `SCRIBE_PROFILE_REFRESH_INTERVAL_DAYS` | 7 | The automatic refresh (Sundays, 02:00 UTC) refreshes a user at most once per this many days, counted from the last refresh that changed something or the last (re)build; 14 is every other Sunday, 30 about once a month |
+| `SCRIBE_PROFILE_REFRESH_MIN_NEW_MESSAGES` | 10 | A profile is refreshed only from this many own messages written for it since it was built (the global profile: in all work chats; a contact's: to that contact), counted in the stored messages of the last 30 days |
+| `SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT` | true | Whether the automatic refresh is on for users who have not chosen in `/settings` (🔄 Automatic style profile refresh) |
+
+The automatic refresh builds a due profile the way 🔄 Rebuild does: from the user's own
+messages of the last `SCRIBE_STYLE_IMPORT_MONTHS` read from Telegram, so a refreshed profile is
+learned from as much history as the first one. A user whose Telegram client is not running is
+skipped until the next run. `python -m scribe.jobs refresh_profiles --user <id>` runs outside
+the service and builds from the stored messages instead.
 
 A truncated `profile.build` answer is retried once with half the samples and one step lower
 effort.

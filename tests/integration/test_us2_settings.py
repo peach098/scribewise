@@ -71,6 +71,7 @@ async def test_settings_menu_validates_and_saves(
         "settings:lang",
         "settings:search_earlier",
         "settings:mark_unread",  # specs/009
+        "settings:profile_refresh",  # automatic profile refresh switch
         "settings:work_account",  # specs/008
         "settings:gender",  # issue #46
         "settings:auto_send_window",  # specs/014

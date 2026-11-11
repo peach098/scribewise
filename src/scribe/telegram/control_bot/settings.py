@@ -13,6 +13,9 @@
   ``users.search_earlier_messages`` on each press and re-renders the /settings message.
   🔵 Mark chats unread after the agent (specs/009): ``settings:mark_unread`` flips
   ``users.mark_unread`` the same way (no popup); nothing is marked or unmarked by the press.
+  🔄 Automatic profile refresh: ``settings:profile_refresh`` stores the opposite of the current
+  state in ``users.profile_auto_refresh`` (NULL until the first press: the
+  ``SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT`` setting applies); the refresh job skips users with it off.
   👤 Gender in drafts (issue #46): ``settings:gender`` turns the /settings message into the two
   forms (``setgender:<masculine|feminine>:settings``, ``grammatical_gender.py``) with the current
   one ticked; a press stores ``users.grammatical_gender`` and renders /settings again in place.
@@ -65,7 +68,8 @@ screen the enable row reads 🚫 Exclude / ↩️ Include again while the mode i
 chat it picked up). ``/history`` names the chat of a pick-up, exclusion or inclusion.
 
 Callbacks:
-``settings:<delay|hours|days|tz|lang|search_earlier|mark_unread|work_account|gender>``,
+``settings:<delay|hours|days|tz|lang|search_earlier|mark_unread|profile_refresh|work_account|
+gender>``,
 ``setgender:<masculine|feminine>[:settings]``, ``setday:<0-6|done>``, ``settz:<zone>``,
 ``wacct:<on|off|cancel>``, ``chatspage:<n>``, ``wxopen:0``,
 ``setlang:<en|ru>``, ``chatcfg:<chat_id>``, ``chatdelay:<chat_id>[:clear]``,
@@ -102,7 +106,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from scribe.access.apply import ApplyStates
 from scribe.chats import work_account
 from scribe.clock import Clock, utcnow
-from scribe.config import Settings
+from scribe.config import Settings, get_settings
 from scribe.context.history import turn_messages
 from scribe.db.models import (
     MAX_DELAY_S,
@@ -204,6 +208,7 @@ WORK_ACCOUNT = "work_account"  # settings:work_account (specs/008 contracts/cont
 CHAT_EXCLUDED_STATUS = Msg("status.chat_excluded")
 WORK_ACCOUNT_OFF_STATUS = Msg("status.work_account_off")
 MARK_UNREAD = "mark_unread"  # settings:mark_unread (specs/009 contracts/control-chat.md)
+PROFILE_REFRESH = "profile_refresh"  # settings:profile_refresh: the automatic profile refresh
 AUTO_SEND_WINDOW = "auto_send_window"  # settings:auto_send_window (specs/014): the window choice
 AUTO_SEND_OFF_ALL = "auto_send_off_all"  # settings:auto_send_off_all (specs/014 SC-005)
 AUTO_SEND_LIST = "auto_send_list"  # settings:auto_send_list (specs/014 FR-019)
@@ -419,6 +424,7 @@ def settings_text(
     start, end = f"{user.work_start:%H:%M}", f"{user.work_end:%H:%M}"
     search = "on" if user.search_earlier_messages else "off"
     mark = "on" if user.mark_unread else "off"
+    refresh = "on" if profile_auto_refresh_on(user) else "off"
     return "\n".join(
         [
             t("settings.title", lang),
@@ -434,6 +440,11 @@ def settings_text(
                 state=t(f"settings.search_earlier_state.{search}", lang),
             ),
             t("settings.mark_unread", lang, state=t(f"settings.mark_unread_state.{mark}", lang)),
+            t(
+                "settings.profile_refresh",
+                lang,
+                state=t(f"settings.profile_refresh_state.{refresh}", lang),
+            ),
             work_account_line(user, excluded, lang),
             t("settings.gender", lang, value=gender_label(user.grammatical_gender, lang)),
             *([auto_send_line(user, auto_send_chats)] if auto_send_chats is not None else []),
@@ -449,14 +460,17 @@ def settings_keyboard(
     work_account: bool = False,
     mark_unread: bool = True,
     auto_send_chats: int = 0,
+    profile_refresh: bool = True,
 ) -> InlineKeyboardMarkup:
     """``search_earlier``: the current ``users.search_earlier_messages`` (specs/004);
     ``work_account``: the current ``users.work_account`` (specs/008); ``mark_unread``: the
     current ``users.mark_unread`` (specs/009); ``auto_send_chats``: the number of chats auto-send
-    is on for (specs/014), with some the list and turn-off-everywhere buttons are shown."""
+    is on for (specs/014), with some the list and turn-off-everywhere buttons are shown;
+    ``profile_refresh``: whether the automatic profile refresh is on for the user."""
     search = "btn.search_earlier_off" if search_earlier else "btn.search_earlier_on"
     mode = "btn.work_account_off" if work_account else "btn.work_account_on"
     mark = "btn.mark_unread_off" if mark_unread else "btn.mark_unread_on"
+    refresh = "btn.profile_refresh_off" if profile_refresh else "btn.profile_refresh_on"
     return keyboard(
         [
             [
@@ -470,6 +484,7 @@ def settings_keyboard(
             [button(t("btn.language", lang), format_callback("settings", "lang"))],
             [button(t(search, lang), format_callback("settings", SEARCH_EARLIER))],
             [button(t(mark, lang), format_callback("settings", MARK_UNREAD))],
+            [button(t(refresh, lang), format_callback("settings", PROFILE_REFRESH))],
             [button(t(mode, lang), format_callback("settings", WORK_ACCOUNT))],
             [button(t("btn.gender", lang), format_callback("settings", GENDER))],
             [
@@ -694,6 +709,7 @@ def _settings_keyboard_of(user: User, auto_send_chats: int = 0) -> InlineKeyboar
         user.work_account,
         user.mark_unread,
         auto_send_chats,
+        profile_auto_refresh_on(user),
     )
 
 
@@ -756,6 +772,42 @@ async def _toggle_mark_unread(
     current = await _fresh_user(session_factory, user) or user
     stored = await _save_user(
         session_factory, current, clock, replan=False, mark_unread=not current.mark_unread
+    )
+    if stored is None:
+        await callback.answer(t("common.not_set_up", current.language))
+        return
+    await callback.answer()
+    await _rerender_settings(callback, bot, stored, session_factory)
+
+
+def profile_auto_refresh_on(user: User) -> bool:
+    """Whether the automatic profile refresh is on: the user's choice, else the deployment
+    default (``SCRIBE_PROFILE_AUTO_REFRESH_DEFAULT``)."""
+    if user.profile_auto_refresh is not None:
+        return user.profile_auto_refresh
+    try:
+        return get_settings().profile_auto_refresh_default
+    except Exception:  # no complete configuration (e.g. a test): the documented default
+        return True
+
+
+async def _toggle_profile_refresh(
+    callback: CallbackQuery,
+    bot: Bot,
+    user: User,
+    session_factory: async_sessionmaker[AsyncSession],
+    clock: Clock,
+) -> None:
+    """``settings:profile_refresh``: each press stores the opposite of the current state in
+    ``users.profile_auto_refresh`` (from then on the user's choice, not the default) and
+    re-renders the /settings message."""
+    current = await _fresh_user(session_factory, user) or user
+    stored = await _save_user(
+        session_factory,
+        current,
+        clock,
+        replan=False,
+        profile_auto_refresh=not profile_auto_refresh_on(current),
     )
     if stored is None:
         await callback.answer(t("common.not_set_up", current.language))
@@ -970,6 +1022,9 @@ async def settings_menu(
         return
     if item == MARK_UNREAD:
         await _toggle_mark_unread(callback, bot, user, session_factory, clock)
+        return
+    if item == PROFILE_REFRESH:
+        await _toggle_profile_refresh(callback, bot, user, session_factory, clock)
         return
     if item == AUTO_SEND_WINDOW:
         await _show_window_choice(callback, bot, user, session_factory)
