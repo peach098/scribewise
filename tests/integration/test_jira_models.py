@@ -305,7 +305,7 @@ async def test_migration_0004_backfills_and_downgrades(migrated_database_url: st
             )
             assert enums == 0
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
     finally:
         await scratch.dispose()
         async with admin.connect() as connection:
@@ -362,7 +362,7 @@ async def test_migration_0007_search_earlier(migrated_database_url: str) -> None
                 )
             )
             assert columns == 0
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
     finally:
         await scratch.dispose()
         async with admin.connect() as connection:
@@ -430,7 +430,7 @@ async def test_migration_0009_drops_group_mode(migrated_database_url: str) -> No
             ).scalars()
             assert list(modes) == ["mentions_only", "mentions_only"]
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
     finally:
         await scratch.dispose()
         async with admin.connect() as connection:

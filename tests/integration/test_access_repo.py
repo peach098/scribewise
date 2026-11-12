@@ -186,7 +186,7 @@ APPLICATION_KINDS = {"application_submitted", "application_approved", "applicati
 
 
 async def test_migrations_0005_0006_downgrade_and_upgrade(migrated_database_url: str) -> None:
-    """upgrade head -> downgrade 0005 -> downgrade 0004 -> upgrade head on a scratch database.
+    """upgrade heads -> downgrade 0005 -> downgrade 0004 -> upgrade heads on a scratch database.
 
     0006 (beta applications) drops its table and status enum on downgrade but leaves the
     values it added to ``access_event_kind`` (Postgres cannot drop enum values)."""
@@ -234,17 +234,17 @@ async def test_migrations_0005_0006_downgrade_and_upgrade(migrated_database_url:
             return set(rows.scalars().all())
 
     try:
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert await schema() == (ACCESS_TABLES | {"beta_applications"}, True, 1, 1)
         assert await event_kinds() >= APPLICATION_KINDS
         _alembic(scratch_url, "downgrade", "0005")
         assert await schema() == (ACCESS_TABLES, True, 1, 0)
         assert await event_kinds() >= APPLICATION_KINDS
-        _alembic(scratch_url, "upgrade", "head")  # ADD VALUE IF NOT EXISTS: no error
+        _alembic(scratch_url, "upgrade", "heads")  # ADD VALUE IF NOT EXISTS: no error
         assert await schema() == (ACCESS_TABLES | {"beta_applications"}, True, 1, 1)
         _alembic(scratch_url, "downgrade", "0004")
         assert await schema() == (set(), False, 0, 0)
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert await schema() == (ACCESS_TABLES | {"beta_applications"}, True, 1, 1)
     finally:
         await scratch.dispose()

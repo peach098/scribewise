@@ -28,12 +28,17 @@ What ``setup`` can register on the host:
 
 Operator commands are separate: ``python -m scribe.admin`` calls a module's
 ``register_admin(subparsers)`` (:func:`admin_commands`), without a host.
+
+Database tables are separate too: ``alembic/env.py`` imports each module's ``models`` submodule
+(:func:`import_plugin_models`), whose tables are declared on the core ``scribe.db.base.Base``,
+so ``alembic check`` and autogenerate see them.
 """
 
 from __future__ import annotations
 
 import argparse
 import importlib
+import importlib.util
 import uuid
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -46,7 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from scribe.access.apply import OfferProvider
 from scribe.access.gate import MessageFilter, OpenPaths
 from scribe.clock import Clock, utcnow
-from scribe.config import Settings
+from scribe.config import PluginSettings, Settings
 from scribe.drafting.budget import (
     ExcludingRoutes,
     LimitsResolver,
@@ -263,6 +268,31 @@ def admin_commands(
     return handlers
 
 
+def plugin_modules_from_env() -> list[str]:
+    """The ``SCRIBE_PLUGINS`` modules, parsed like ``Settings.plugins`` (environment, then
+    ``.env``), without requiring any other setting."""
+    return list(PluginSettings().plugins)
+
+
+def import_plugin_models(modules: Sequence[str]) -> list[str]:
+    """Import ``<module>.models`` for each plugin module that has one; the names imported.
+
+    A plugin without a ``models`` submodule (or a plain module, not a package) is skipped. A
+    plugin that cannot be imported, or whose ``models`` raises on import, is a
+    :class:`PluginError`."""
+    imported: list[str] = []
+    for name in modules:
+        package = import_plugin(name)
+        if not hasattr(package, "__path__"):
+            continue
+        models = f"{name}.models"
+        if importlib.util.find_spec(models) is None:
+            continue
+        import_plugin(models)
+        imported.append(models)
+    return imported
+
+
 __all__ = [
     "AdminHandler",
     "LimitsListener",
@@ -271,5 +301,7 @@ __all__ = [
     "PluginHost",
     "admin_commands",
     "import_plugin",
+    "import_plugin_models",
     "load_plugins",
+    "plugin_modules_from_env",
 ]

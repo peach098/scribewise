@@ -48,7 +48,7 @@ and can still use `/my_data` and `/delete_my_data`.
 
 Rollout order, so nobody is cut off:
 
-1. Back up the database, then `docker compose run --rm app alembic upgrade head` and
+1. Back up the database, then `docker compose run --rm app alembic upgrade heads` and
    `docker compose up -d app`.
 2. Set `SCRIBE_OPERATOR_TELEGRAM_IDS` to your own id.
 3. **Add the existing users before turning the gate on**: `python -m scribe.admin list-users`,

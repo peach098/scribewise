@@ -7,8 +7,9 @@ from __future__ import annotations
 import argparse
 import sys
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from datetime import datetime
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -29,7 +30,14 @@ from scribe.drafting.budget import (
     UsageLimits,
 )
 from scribe.i18n import has_text, t
-from scribe.plugins import PluginError, PluginHost, admin_commands, load_plugins
+from scribe.plugins import (
+    PluginError,
+    PluginHost,
+    admin_commands,
+    import_plugin_models,
+    load_plugins,
+    plugin_modules_from_env,
+)
 from tests.conftest import FROZEN_NOW
 
 PLUGIN = "scribe_test_fake_plugin"
@@ -295,3 +303,91 @@ def test_a_command_added_twice_is_an_error(monkeypatch: pytest.MonkeyPatch) -> N
     parser = argparse.ArgumentParser()
     with pytest.raises((PluginError, argparse.ArgumentError)):
         admin_commands(parser.add_subparsers(), [PLUGIN, "scribe_test_second_plugin"])
+
+
+# --- SCRIBE_PLUGINS for alembic (docs/plugins.md "Database tables and migrations") -----------
+
+
+@pytest.fixture
+def plugin_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """No SCRIBE_PLUGINS in the environment, and a working directory without the repo's .env."""
+    monkeypatch.delenv("SCRIBE_PLUGINS", raising=False)
+    monkeypatch.chdir(tmp_path)
+    return tmp_path
+
+
+def test_plugin_modules_default_to_none(plugin_env: Path) -> None:
+    assert plugin_modules_from_env() == []
+
+
+def test_plugin_modules_parse_like_settings(
+    plugin_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SCRIBE_PLUGINS", " a.plugin , b ,, a.plugin ")
+    assert plugin_modules_from_env() == ["a.plugin", "b"]
+
+
+def test_plugin_modules_need_no_other_setting(
+    plugin_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("SCRIBE_CONTROL_BOT_TOKEN", "SCRIBE_DATABASE_URL", "SCRIBE_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("SCRIBE_PLUGINS", "a")
+    assert plugin_modules_from_env() == ["a"]
+
+
+def test_plugin_modules_from_dotenv_and_environment_wins(
+    plugin_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (plugin_env / ".env").write_text("SCRIBE_PLUGINS=from_file,other\n")
+    assert plugin_modules_from_env() == ["from_file", "other"]
+    monkeypatch.setenv("SCRIBE_PLUGINS", "from_env")
+    assert plugin_modules_from_env() == ["from_env"]
+
+
+@pytest.fixture
+def plugin_packages(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Iterator[Path]:
+    """A directory on ``sys.path`` for throwaway plugin packages; their modules are removed
+    from ``sys.modules`` afterwards."""
+    root = tmp_path / "site"
+    root.mkdir()
+    monkeypatch.syspath_prepend(str(root))
+    before = set(sys.modules)
+    yield root
+    for name in set(sys.modules) - before:
+        if name.startswith("scribe_test_models_"):
+            del sys.modules[name]
+
+
+def _package(root: Path, name: str, models: str | None = None) -> None:
+    package = root / name
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    if models is not None:
+        (package / "models.py").write_text(models)
+
+
+def test_plugin_models_are_imported(plugin_packages: Path) -> None:
+    _package(plugin_packages, "scribe_test_models_a", models="IMPORTED = True\n")
+    _package(plugin_packages, "scribe_test_models_b")  # no models: skipped
+    (plugin_packages / "scribe_test_models_c.py").write_text("")  # a plain module: skipped
+
+    imported = import_plugin_models(
+        ["scribe_test_models_a", "scribe_test_models_b", "scribe_test_models_c"]
+    )
+
+    assert imported == ["scribe_test_models_a.models"]
+    assert sys.modules["scribe_test_models_a.models"].IMPORTED is True
+
+
+def test_plugin_models_that_fail_stop_alembic(plugin_packages: Path) -> None:
+    _package(
+        plugin_packages, "scribe_test_models_broken", models="import scribe_test_models_absent\n"
+    )
+    with pytest.raises(PluginError, match="scribe_test_models_broken.models"):
+        import_plugin_models(["scribe_test_models_broken"])
+
+
+def test_a_missing_plugin_stops_alembic(plugin_packages: Path) -> None:
+    with pytest.raises(PluginError, match="scribe_test_models_missing"):
+        import_plugin_models(["scribe_test_models_missing"])

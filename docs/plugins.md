@@ -122,3 +122,58 @@ def register_admin(subparsers: argparse._SubParsersAction) -> dict:
 
     return {"example": example}
 ```
+
+## Database tables and migrations
+
+A plugin keeps its tables in its own migration branch, so the core migrations never change.
+
+**Models.** Put the plugin's SQLAlchemy models in a `models` submodule of the plugin package
+(`my_company.scribe_plugin.models` for `SCRIBE_PLUGINS=my_company.scribe_plugin`) and declare
+them on the core declarative base, `scribe.db.base.Base` (also importable from
+`scribe.db.models`), so they share `Base.metadata` with the core tables and can reference them
+with foreign keys:
+
+```python
+import uuid
+
+from sqlalchemy import ForeignKey
+from sqlalchemy.orm import Mapped, mapped_column
+
+from scribe.db.base import Base
+
+
+class ExampleItem(Base):
+    __tablename__ = "example_items"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+```
+
+`alembic/env.py` reads `SCRIBE_PLUGINS` (from the environment, then `.env`, as the service
+does; no other setting is needed) and imports `<module>.models` for each listed module that has
+one. A plugin without a `models` submodule is skipped; a plugin that cannot be imported, or
+whose `models` fails on import, stops alembic with an error. So `alembic check` and
+`alembic revision --autogenerate` see the plugin's tables only while `SCRIBE_PLUGINS` lists the
+plugin; without it, `alembic check` against a database with the plugin's tables reports them as
+removed.
+
+**Migrations.** Start the plugin's first migration as a new branch with its own label that
+depends on the core revision it needs:
+
+```python
+revision = "example_0001"
+down_revision = None
+branch_labels = ("example",)
+depends_on = "0023"  # the core revision whose tables this branch uses
+```
+
+Later plugin migrations chain on `down_revision` within the branch as usual. Alembic finds the
+plugin's migration files through `version_locations`: copy the files into `alembic/versions/`
+when you build your image, or list both directories in `alembic.ini`, separated by the
+system path separator (`path_separator = os`; `:` on Linux), for example
+`version_locations = %(here)s/alembic/versions:/path/to/plugin/migrations`.
+
+The repository then has two heads, the core's and the plugin's, so always migrate with
+`alembic upgrade heads` (plural; with no plugin it does the same as `upgrade head`).
+`alembic upgrade head` refuses with "Multiple head revisions". Generate a plugin migration with
+`alembic revision --autogenerate --head example@head -m "..."`.

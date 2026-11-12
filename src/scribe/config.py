@@ -43,6 +43,17 @@ def _check_key_id(key_id: str, field: str) -> str:
     return key_id
 
 
+def _split_names(value: object) -> object:
+    """A comma-separated env value as a list of names; other values unchanged."""
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    return value
+
+
+def _unique_names(value: list[str]) -> list[str]:
+    return list(dict.fromkeys(part.strip() for part in value if part.strip()))
+
+
 def parse_previous_master_keys(value: str) -> dict[str, bytes]:
     """``SCRIBE_MASTER_KEYS_PREVIOUS``: comma-separated ``<key id>:<base64 key>`` entries."""
     keys: dict[str, bytes] = {}
@@ -256,14 +267,12 @@ class Settings(BaseSettings):
     @field_validator("plugins", "llm_budget_excluded_routes", mode="before")
     @classmethod
     def _split_names(cls, value: object) -> object:
-        if isinstance(value, str):
-            return [part.strip() for part in value.split(",") if part.strip()]
-        return value
+        return _split_names(value)
 
     @field_validator("plugins", "llm_budget_excluded_routes")
     @classmethod
     def _unique_names(cls, value: list[str]) -> list[str]:
-        return list(dict.fromkeys(part.strip() for part in value if part.strip()))
+        return _unique_names(value)
 
     @field_validator("jira_allowed_ports", mode="before")
     @classmethod
@@ -334,3 +343,28 @@ class Settings(BaseSettings):
 def get_settings() -> Settings:
     """Process-wide settings, read once from the environment."""
     return Settings()  # required fields come from the environment
+
+
+class PluginSettings(BaseSettings):
+    """Only ``SCRIBE_PLUGINS``, read like :attr:`Settings.plugins` (environment, then ``.env``)
+    but without the other required settings: for tools such as ``alembic/env.py``."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="SCRIBE_",
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        hide_input_in_errors=True,
+    )
+
+    plugins: Annotated[list[str], NoDecode] = Field(default_factory=list)
+
+    @field_validator("plugins", mode="before")
+    @classmethod
+    def _split_names(cls, value: object) -> object:
+        return _split_names(value)
+
+    @field_validator("plugins")
+    @classmethod
+    def _unique_names(cls, value: list[str]) -> list[str]:
+        return _unique_names(value)
