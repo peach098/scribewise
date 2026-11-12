@@ -476,7 +476,7 @@ async def test_migration_0002_backfills_and_downgrades(migrated_database_url: st
             )
             assert enum_exists == 0
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         # 0003 (issue #8): existing users keep the English UI; only en / ru are allowed.
         async with scratch.begin() as connection:
             language = await connection.scalar(
@@ -503,7 +503,7 @@ async def test_migration_0002_backfills_and_downgrades(migrated_database_url: st
                 .all()
             )
             assert "language" not in columns
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
     finally:
         await scratch.dispose()
         async with admin.connect() as connection:
@@ -553,7 +553,7 @@ async def test_migration_0008_upgrade_downgrade(migrated_database_url: str) -> N
     try:
         _alembic(scratch_url, "upgrade", "0007")
         assert "search_earlier_messages" in await columns("users")
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert added <= await columns("conversation_turns")
         assert "skip_closing" in await columns("users")
         assert "skip_closing" in await columns("work_chats")
@@ -576,7 +576,7 @@ async def test_migration_0008_upgrade_downgrade(migrated_database_url: str) -> N
             )
             assert types == 0
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert added <= await columns("conversation_turns")
         assert await index_def() is not None
     finally:
@@ -953,7 +953,7 @@ async def test_migration_0010_mark_unread(migrated_database_url: str) -> None:
         assert "skip_closing" in await columns("users")  # earlier revisions are untouched
         assert "group_mode" not in await columns("work_chats")  # 0009 is still applied
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert "mark_unread" in await columns("users")
         assert "unread_mark_floor" in await columns("work_chats")
     finally:
@@ -1031,7 +1031,7 @@ async def test_migration_0013_upgrade_downgrade(migrated_database_url: str) -> N
     try:
         _alembic(scratch_url, "upgrade", "0010")
         assert "origin" not in await columns("work_chats")
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert {"origin", "excluded"} <= await columns("work_chats")
         assert {"work_account", "work_account_changed_at"} <= await columns("users")
         _alembic(scratch_url, "downgrade", "0010")
@@ -1042,7 +1042,7 @@ async def test_migration_0013_upgrade_downgrade(migrated_database_url: str) -> N
                 text("SELECT count(*) FROM pg_type WHERE typname = 'work_chat_origin'")
             )
             assert count == 0
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert {"origin", "excluded"} <= await columns("work_chats")
     finally:
         await scratch.dispose()
@@ -1077,7 +1077,7 @@ async def test_migration_0014_downgrade_clears_forwarded_decisions(
             return set(rows.scalars().all())
 
     try:
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert {"is_forwarded", "forwarded_from"} <= await columns("messages")
         async with scratch.begin() as connection:
             await connection.execute(
@@ -1126,7 +1126,7 @@ async def test_migration_0014_downgrade_clears_forwarded_decisions(
             by_id = {row[0]: tuple(row[1:]) for row in rows.all()}
         assert by_id[ids["forwarded"]] == ("skipped", None, None, None)
         assert by_id[ids["thanks"]] == ("skipped", "skip", "thanks", "pregate")
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert {"is_forwarded", "forwarded_from"} <= await columns("messages")
     finally:
         await scratch.dispose()
@@ -1201,7 +1201,7 @@ async def test_migration_auto_send(migrated_database_url: str) -> None:
         await accepted(draft_sql("turn", "pending").replace("gen_random_uuid()", ":draft", 1))
         await rejected("UPDATE drafts SET state = 'sent' WHERE id = :draft")
 
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
 
         async with scratch.connect() as connection:
             chat = (
@@ -1295,7 +1295,7 @@ async def test_migration_auto_send(migrated_database_url: str) -> None:
             " AND pg_get_constraintdef(oid) NOT LIKE '%auto_approved_at%' FROM pg_constraint"
             " WHERE conname = 'ck_drafts_sent_requires_approval'"
         )
-        _alembic(scratch_url, "upgrade", "head")
+        _alembic(scratch_url, "upgrade", "heads")
         assert await exists(
             "SELECT 1 FROM information_schema.tables WHERE table_name = 'draft_decisions'"
         )

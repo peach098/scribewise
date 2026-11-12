@@ -257,7 +257,7 @@ def database_url() -> Iterator[str]:
 def migrated_database_url(database_url: str) -> str:
     """Apply the real migrations once per session (in a subprocess: env.py runs its own loop)."""
     subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        [sys.executable, "-m", "alembic", "upgrade", "heads"],
         cwd=ROOT,
         env={**os.environ, "SCRIBE_DATABASE_URL": database_url},
         check=True,

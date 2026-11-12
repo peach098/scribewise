@@ -55,7 +55,7 @@ Start the database, apply the migrations and start the app:
 
 ```bash
 docker compose up -d db
-docker compose run --rm app alembic upgrade head
+docker compose run --rm app alembic upgrade heads
 docker compose up -d --build app
 curl -s localhost:8080/healthz     # {"status": "ok", ...}
 ```
@@ -76,7 +76,7 @@ For development, run Postgres in Docker and the app with uv. Scribe reads LLM ke
 docker compose up -d db
 uv sync
 export SCRIBE_DATABASE_URL=postgresql+asyncpg://scribe:scribe@localhost:5432/scribe
-uv run --env-file .env alembic upgrade head
+uv run --env-file .env alembic upgrade heads
 uv run --env-file .env python -m scribe
 ```
 
@@ -242,7 +242,7 @@ git pull
 docker compose build app
 docker compose exec -T db pg_dump -U scribe -d scribe -Fc > backup-$(date +%F).dump
 docker compose stop app
-docker compose run --rm app alembic upgrade head
+docker compose run --rm app alembic upgrade heads
 docker compose up -d app
 ```
 

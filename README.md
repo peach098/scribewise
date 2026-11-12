@@ -201,7 +201,7 @@ echo 'SCRIBE_DELAY_MAX_S=0' >> .env
 
 ```bash
 docker compose up -d db
-docker compose run --rm app alembic upgrade head
+docker compose run --rm app alembic upgrade heads
 docker compose up -d --build app
 ```
 

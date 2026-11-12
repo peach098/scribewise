@@ -1,4 +1,9 @@
-"""Alembic environment: runs migrations through the app's async engine (scribe.db.session)."""
+"""Alembic environment: runs migrations through the app's async engine (scribe.db.session).
+
+The target metadata is ``Base.metadata`` with the core models plus, for each module in
+``SCRIBE_PLUGINS``, its ``<module>.models`` submodule when it has one (docs/plugins.md), so
+``alembic check`` and autogenerate also see plugin tables.
+"""
 
 import asyncio
 import os
@@ -13,12 +18,14 @@ import scribe.db.models  # noqa: F401  (registers every table on Base.metadata)
 from scribe.crypto import EncryptedJSON, EncryptedText
 from scribe.db.base import Base
 from scribe.db.session import create_engine
+from scribe.plugins import import_plugin_models, plugin_modules_from_env
 
 config = context.config
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+import_plugin_models(plugin_modules_from_env())
 target_metadata = Base.metadata
 
 

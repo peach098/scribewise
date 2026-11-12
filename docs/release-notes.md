@@ -43,7 +43,7 @@ oldest first.
 3. If the release is worth announcing, add `release-notes/<version>.md` in English and
    Russian, then check it: `python -m scribe.admin release-notes preview <version>`.
 4. Merge, then optionally tag: `git tag v<version> && git push origin v<version>`.
-5. Deploy as usual (`git pull`, `docker compose build`, `alembic upgrade head`, `up -d`).
+5. Deploy as usual (`git pull`, `docker compose build`, `alembic upgrade heads`, `up -d`).
    A few minutes later check `release-notes status`.
 
 To deploy without announcing, set `SCRIBE_RELEASE_NOTES_AUTO=false` for that deploy. The
