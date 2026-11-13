@@ -1,11 +1,17 @@
 """SC-009 (T043): 100 active users with 20 turns each, all due at the same instant, and a slow
-LLM (2 s per call): every turn is drafted and none is read more than 60 s after its ``due_at``.
+LLM: every turn is drafted and none is read more than 60 s after its ``due_at``.
 
-The run is real (Postgres, the real scheduler loop, real asyncio concurrency) but time is scaled:
-the clock runs ``SPEED`` times faster than the wall clock, and the tick period and the fake LLM
-latency are scaled down by the same factor. Database and CPU work are *not* scaled, so they
-count ``SPEED`` times heavier against the 60 s budget than in production: the assertion is
-conservative. Wall time is dominated by the CPU cost of composing 2000 drafts (~25 s).
+The run is real (Postgres, the real scheduler loop with the production 5 s tick, real asyncio
+concurrency) and the clock is the wall clock, so database and CPU work count against the 60 s
+budget exactly as they would in production, no more. The slow LLM is not a sleep: every LLM call
+is *held* until the last turn has been read, i.e. a model of unbounded latency. Reading must not
+wait for drafting, so if it ever did, no turn would be read and the test fails however fast the
+runner is. (Issue #28: an earlier version ran the clock 50x faster than the wall clock, so each
+millisecond of database and CPU work counted as 50 ms, and on busy CI runners ~1.3 s of real
+work showed up as "read 65 s late".)
+
+Two checks do not depend on timing at all: the first tick at or after ``due_at`` claims every
+due turn (a burst is read within one tick), and each turn is marked read exactly once.
 
 004 T037: the same load with the reply gate enabled and half of the turns closing messages
 ("thanks!", pre-gate candidates that the classifier skips). The gate runs after mark_read, so
@@ -20,6 +26,8 @@ import time
 import uuid
 from datetime import datetime, timedelta
 
+import pytest
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -39,6 +47,7 @@ from scribe.db.repos import users as users_repo
 from scribe.drafting.composer import Composer
 from scribe.drafting.reply_gate import ReplyGate
 from scribe.llm.adapters.fake import FakeAdapter
+from scribe.llm.provider import StructuredCall, StructuredResult
 from scribe.llm.registry import LLMRouter
 from scribe.scheduling.scheduler import DueTurnsProcessor, Scheduler
 from scribe.telegram.fake_gateway import FakeMessagingGateway
@@ -47,28 +56,46 @@ from tests.integration.us1_support import draft_output, reply_needed_output
 
 USERS = 100
 TURNS_PER_USER = 20
-LLM_LATENCY_S = 2.0
-TICK_S = 5.0
+TICK_S = 5.0  # the production tick (plan.md: "scheduler tick every 5 s")
 MAX_LATENESS = timedelta(seconds=60)
-SPEED = 50  # virtual seconds per wall-clock second
-WALL_TIMEOUT_S = 120
+DRAFT_TIMEOUT_S = 600  # a hang guard only: drafting 2000 turns is CPU-bound (~25 s locally)
 
 
-class ScaledClock:
-    """``start + SPEED x (wall time elapsed)``: a clock that really advances, only faster."""
+class WallClock:
+    """``start + (wall time elapsed)``: a test clock that runs at the speed of the wall clock."""
 
-    def __init__(self, start: datetime, speed: float) -> None:
-        self._start, self._speed = start, speed
+    def __init__(self, start: datetime) -> None:
+        self._start = start
         self._origin = time.monotonic()
 
     def __call__(self) -> datetime:
-        return self._start + timedelta(seconds=(time.monotonic() - self._origin) * self._speed)
+        return self._start + timedelta(seconds=time.monotonic() - self._origin)
+
+
+class HeldLLM(FakeAdapter):
+    """A fake LLM whose calls do not start until :attr:`release` is set."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def _complete[T: BaseModel](
+        self, request: StructuredCall, schema: type[T], *, batch: bool
+    ) -> StructuredResult[T]:
+        await self.release.wait()
+        return await super()._complete(request, schema, batch=batch)
+
+
+@pytest.fixture
+def fake_llm() -> HeldLLM:
+    """Overrides the shared fixture, so ``llm_router`` routes every call through the hold."""
+    return HeldLLM()
 
 
 class TimedGateway(FakeMessagingGateway):
-    """Records the (scaled) time of every mark_read."""
+    """Records the clock time of every mark_read."""
 
-    def __init__(self, clock: ScaledClock) -> None:
+    def __init__(self, clock: WallClock) -> None:
         super().__init__()
         self.clock = clock
         self.read_at: dict[tuple[uuid.UUID, int, int], datetime] = {}
@@ -76,6 +103,22 @@ class TimedGateway(FakeMessagingGateway):
     async def mark_read(self, user_id: uuid.UUID, chat_id: int, up_to_message_id: int) -> None:
         await super().mark_read(user_id, chat_id, up_to_message_id)
         self.read_at[(user_id, chat_id, up_to_message_id)] = self.clock()
+
+
+class RecordingScheduler(Scheduler):
+    """Records the start time of every tick and how many turns it left ``waiting``."""
+
+    def __init__(
+        self, session_factory: async_sessionmaker[AsyncSession], *, tick_s: float, clock: WallClock
+    ) -> None:
+        super().__init__(session_factory, tick_s=tick_s, clock=clock)
+        self._factory, self._now = session_factory, clock
+        self.ticks: list[tuple[datetime, int]] = []
+
+    async def tick(self, *, drain: bool = False) -> None:
+        started = self._now()
+        await super().tick(drain=drain)
+        self.ticks.append((started, await _count(self._factory, TurnState.waiting)))
 
 
 CLOSING_TEXT = "thanks!"
@@ -162,7 +205,7 @@ async def test_scheduler_throughput(
     committed_session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     llm_router: LLMRouter,
-    fake_llm: FakeAdapter,
+    fake_llm: HeldLLM,
 ) -> None:
     await _run_throughput(committed_session_factory, settings, llm_router, fake_llm, gate=False)
 
@@ -171,7 +214,7 @@ async def test_scheduler_throughput_with_reply_gate(
     committed_session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     llm_router: LLMRouter,
-    fake_llm: FakeAdapter,
+    fake_llm: HeldLLM,
 ) -> None:
     """004 T037: half of the turns are closing messages that the gate skips."""
     await _run_throughput(committed_session_factory, settings, llm_router, fake_llm, gate=True)
@@ -181,7 +224,7 @@ async def _run_throughput(
     session_factory: async_sessionmaker[AsyncSession],
     settings: Settings,
     llm_router: LLMRouter,
-    fake_llm: FakeAdapter,
+    fake_llm: HeldLLM,
     *,
     gate: bool,
 ) -> None:
@@ -190,12 +233,11 @@ async def _run_throughput(
     assert len(expected) == USERS * TURNS_PER_USER
     closings = len(expected) // 2 if gate else 0
 
-    clock = ScaledClock(due_at - timedelta(seconds=1), SPEED)
-    fake_llm.latency_s = LLM_LATENCY_S / SPEED
+    clock = WallClock(due_at - timedelta(seconds=1))
     fake_llm.set_response("compose.draft", draft_output("Synthetic reply"))
     fake_llm.set_response("classify.reply_needed", reply_needed_output(False, "thanks", 0.95))
     gateway = TimedGateway(clock)
-    scheduler = Scheduler(session_factory, tick_s=TICK_S / SPEED, clock=clock)
+    scheduler = RecordingScheduler(session_factory, tick_s=TICK_S, clock=clock)
     scheduler.on_due_turns(
         DueTurnsProcessor(
             session_factory,
@@ -211,18 +253,30 @@ async def _run_throughput(
 
     stop = asyncio.Event()
     runner = asyncio.create_task(scheduler.run(stop))
-    started = time.monotonic()
     try:
+        # Every LLM call is held: the turns must all be read regardless.
+        while len(gateway.read_at) < len(expected):
+            assert clock() - due_at <= MAX_LATENESS, (
+                f"{len(expected) - len(gateway.read_at)} turns were not read within"
+                f" {MAX_LATENESS} of due_at while every LLM call was held"
+            )
+            await asyncio.sleep(0.1)
+        assert fake_llm.calls == []  # nothing reached the model before the last read
+        fake_llm.release.set()
+        started = time.monotonic()
         while (await _count(session_factory, TurnState.pending_review, TurnState.skipped)) < len(
             expected
         ):
-            assert time.monotonic() - started < WALL_TIMEOUT_S, "turns were not all drafted"
+            assert time.monotonic() - started < DRAFT_TIMEOUT_S, "turns were not all drafted"
             await asyncio.sleep(0.2)
     finally:
+        fake_llm.release.set()
         stop.set()
         await runner
         await scheduler.wait_idle()
 
+    first_due_tick = next(left for at, left in scheduler.ticks if at >= due_at)
+    assert first_due_tick == 0, f"the first tick after due_at left {first_due_tick} turns waiting"
     assert set(gateway.read_at) == set(expected)  # every turn read exactly where expected
     assert len(gateway.mark_read_calls) == len(expected)  # and only once
     lateness = [gateway.read_at[key] - due for key, due in expected.items()]
