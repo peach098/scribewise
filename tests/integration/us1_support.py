@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from scribe.access.apply import OfferProvider
 from scribe.config import Settings
-from scribe.db.models import Contact, Draft, User, WorkChat
+from scribe.db.models import Contact, ConversationTurn, Draft, Message, User, WorkChat
 from scribe.db.repos import users as users_repo
 from scribe.drafting.budget import (
     BudgetGuard,
@@ -239,8 +239,25 @@ class US1Harness:
         await self.dispatcher.feed_update(self.bot, update)
 
     async def drafts(self, user: User) -> list[Draft]:
+        """The user's drafts, oldest first, so ``[-1]`` is the newest one.
+
+        ``version`` alone does not order them (every turn's first draft is version 1) and
+        ``created_at`` cannot either: it is the database's ``now()``, which is the same for every
+        row inside a test's outer transaction. Ties on such a key come back in whatever order
+        Postgres finds the rows, which changes from run to run (issue #28). The test clock's
+        ``prepared_at`` orders drafts made at different times; the turn's first Telegram message
+        id (a counter in this harness) orders turns drafted at the same instant.
+        """
         async with self.session_factory() as session:
             result = await session.execute(
-                select(Draft).where(Draft.user_id == user.id).order_by(Draft.version)
+                select(Draft)
+                .join(ConversationTurn, ConversationTurn.id == Draft.conversation_turn_id)
+                .outerjoin(Message, Message.id == ConversationTurn.first_message_id)
+                .where(Draft.user_id == user.id)
+                .order_by(
+                    Draft.prepared_at,
+                    Draft.version,
+                    Message.telegram_message_id,
+                )
             )
             return list(result.scalars().all())

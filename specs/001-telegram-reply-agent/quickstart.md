@@ -99,9 +99,10 @@ Key integration tests to look for (names are the contract):
   rejected and regenerated once, then flagged `needs_info`.
 - `test_filter_context_selects_only_offered_ids`: ids not offered are dropped; filter
   failure falls back to the deterministic default with `filter_unavailable` warning.
-- `test_scheduler_throughput`: 100 users × 20 due turns with Fake providers (2 s LLM
-  latency) → every turn drafted, no turn read more than 60 s after `due_at` (SC-009). Runs on
-  a clock 50× faster than wall time, so it takes ~30 s rather than minutes.
+- `test_scheduler_throughput`: 100 users × 20 due turns with Fake providers, every LLM call
+  held until the last turn is read (a model of any latency) → every turn drafted, all due
+  turns claimed by the first tick after `due_at`, no turn read more than 60 s after `due_at`
+  (SC-009). Runs on the wall clock with the production 5 s tick (issue #28).
 
 Key unit tests: `test_route_table_overrides_and_tiers` (env override changes a route's
 provider/model; `economy` user gets the economy compose model; unknown provider or
