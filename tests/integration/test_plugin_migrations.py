@@ -12,10 +12,12 @@ import sys
 import uuid
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 from sqlalchemy.engine import make_url
 
 from scribe.db.session import create_engine
+from scribe.plugins import plugin_modules_from_env
 from tests.conftest import ROOT
 
 PLUGIN = "scribe_test_tables_plugin"
@@ -105,10 +107,21 @@ def _alembic(
     )
 
 
+def _revisions(output: str) -> set[str]:
+    """Revision ids from ``alembic heads`` / ``alembic current`` output."""
+    return {line.split()[0] for line in output.splitlines() if line.strip()}
+
+
 async def test_plugin_branch_upgrades_with_heads_and_check_sees_plugin_models(
-    migrated_database_url: str, tmp_path: Path
+    migrated_database_url: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     site, config = _write_plugin(tmp_path)
+    # Plugins already configured for alembic's working directory (environment, then .env) stay
+    # enabled: their branches are in the versions directory and their tables in the database.
+    monkeypatch.chdir(ROOT)
+    existing = plugin_modules_from_env()
+    without = ",".join(existing)
+    plugins = ",".join([*existing, PLUGIN])
     name = f"scribe_plugin_branch_{uuid.uuid4().hex[:12]}"
     admin = create_engine(migrated_database_url)
     scratch_url = (
@@ -118,20 +131,25 @@ async def test_plugin_branch_upgrades_with_heads_and_check_sees_plugin_models(
         await connection.execution_options(isolation_level="AUTOCOMMIT")
         await connection.execute(text(f'CREATE DATABASE "{name}"'))
     try:
-        single = _alembic(config, scratch_url, site, PLUGIN, "upgrade", "head")
+        heads = _alembic(config, scratch_url, site, plugins, "heads")
+        assert heads.returncode == 0, heads.stdout + heads.stderr
+        assert "plugin_test_0001" in _revisions(heads.stdout)
+        assert len(_revisions(heads.stdout)) >= 2
+
+        single = _alembic(config, scratch_url, site, plugins, "upgrade", "head")
         assert single.returncode != 0
         assert "Multiple head revisions" in single.stdout + single.stderr
 
-        upgraded = _alembic(config, scratch_url, site, PLUGIN, "upgrade", "heads")
+        upgraded = _alembic(config, scratch_url, site, plugins, "upgrade", "heads")
         assert upgraded.returncode == 0, upgraded.stdout + upgraded.stderr
 
-        heads = _alembic(config, scratch_url, site, PLUGIN, "current")
-        assert "plugin_test_0001" in heads.stdout and "0023" in heads.stdout
+        current = _alembic(config, scratch_url, site, plugins, "current")
+        assert _revisions(current.stdout) == _revisions(heads.stdout)
 
-        with_plugin = _alembic(config, scratch_url, site, PLUGIN, "check")
+        with_plugin = _alembic(config, scratch_url, site, plugins, "check")
         assert with_plugin.returncode == 0, with_plugin.stdout + with_plugin.stderr
 
-        without_plugin = _alembic(config, scratch_url, site, "", "check")
+        without_plugin = _alembic(config, scratch_url, site, without, "check")
         assert without_plugin.returncode != 0
         assert "plugin_test_items" in without_plugin.stdout + without_plugin.stderr
     finally:
